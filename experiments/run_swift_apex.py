@@ -1,0 +1,325 @@
+"""Experiment runner: SWIFT & APEX on BBH, GSM8K, HumanEval.
+
+Iterates over the experiment matrix defined in the config, fetching seed prompts
+from the appropriate repositories and running each method/task combination.
+
+Usage:
+    python experiments/run_swift_apex.py
+    python experiments/run_swift_apex.py --methods swift
+    python experiments/run_swift_apex.py --tasks dyck_languages formal_fallacies
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from pof.config.loader import load_config
+from pof.config.schemas import RunConfig
+from pof.prompts.loader import get_seed_prompt
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+# =============================================================================
+# EXPERIMENT MATRIX
+# =============================================================================
+
+METHODS = ["swift", "apex"]
+
+# Random seeds for statistical robustness (3 runs per configuration)
+SEEDS = [42, 123, 7]
+
+# BBH tasks with CoT prompts from EvoPrompt repo
+BBH_TASKS = [
+    "dyck_languages",
+    "causal_judgement",
+    "disambiguation_qa",
+    "formal_fallacies",
+    "hyperbaton",
+    "logical_deduction_five_objects",
+    "reasoning_about_colored_objects",
+]
+
+# Max new tokens per dataset type (CoT needs more tokens)
+MAX_NEW_TOKENS = {
+    "bbh": 1024,       # CoT reasoning can be verbose (e.g., dyck_languages step-by-step)
+    "gsm8k": 512,      # Math CoT: step-by-step then final answer
+    "humaneval": 1024,  # Code generation needs space
+}
+
+# Dataset configurations
+DATASETS = {
+    "bbh": {
+        "tasks": BBH_TASKS,
+        "max_new_tokens": MAX_NEW_TOKENS["bbh"],
+        "task_type": "auto",
+    },
+    "gsm8k": {
+        "tasks": [""],  # Single task
+        "max_new_tokens": MAX_NEW_TOKENS["gsm8k"],
+        "task_type": "math",
+    },
+    "humaneval": {
+        "tasks": [""],  # Single task
+        "max_new_tokens": MAX_NEW_TOKENS["humaneval"],
+        "task_type": "text",
+    },
+}
+
+
+def build_run_config(
+    base_config_path: str,
+    method: str,
+    dataset: str,
+    task: str,
+    max_new_tokens: int,
+    seed_prompt: str,
+    seed: int = 42,
+) -> RunConfig:
+    """Build a RunConfig for a specific method/dataset/task combination."""
+    task_label = f"{dataset}_{task}" if task else dataset
+    overrides: Dict[str, Any] = {
+        "optimizer": {
+            "method": method,
+            "seed_prompt": seed_prompt,
+        },
+        "dataset": {
+            "name": dataset,
+            "task": task,
+        },
+        "evaluation": {
+            "max_new_tokens": max_new_tokens,
+        },
+        "seed": seed,
+        "output_dir": f"outputs/swift_apex_benchmark/{method}/{task_label}/seed_{seed}",
+    }
+    return load_config(base_config_path, overrides=overrides)
+
+
+def run_experiment(
+    methods: Optional[List[str]] = None,
+    datasets: Optional[List[str]] = None,
+    tasks: Optional[List[str]] = None,
+    seeds: Optional[List[int]] = None,
+    config_path: str = "experiments/configs/swift_apex_benchmark.yaml",
+    dry_run: bool = False,
+):
+    """Run the full experiment matrix with multiple seeds.
+
+    Args:
+        methods: Methods to run (default: all).
+        datasets: Datasets to run (default: all).
+        tasks: Specific tasks to run (default: all per dataset).
+        seeds: Random seeds for repetition (default: [42, 123, 7]).
+        config_path: Path to base config YAML.
+        dry_run: If True, only print what would be run.
+    """
+    methods = methods or METHODS
+    datasets_to_run = datasets or list(DATASETS.keys())
+    seeds = seeds or SEEDS
+
+    results: Dict[str, Any] = {}
+    total_runs = 0
+    completed_runs = 0
+    failed_runs = 0
+
+    # Count total runs (methods × tasks × seeds)
+    for dataset in datasets_to_run:
+        ds_config = DATASETS[dataset]
+        ds_tasks = tasks if tasks else ds_config["tasks"]
+        for task in ds_tasks:
+            for method in methods:
+                for seed in seeds:
+                    total_runs += 1
+
+    logger.info(f"{'='*70}")
+    logger.info(f"EXPERIMENT: SWIFT & APEX Benchmark (multi-seed)")
+    logger.info(f"Methods: {methods}")
+    logger.info(f"Datasets: {datasets_to_run}")
+    logger.info(f"Seeds: {seeds}")
+    logger.info(f"Total runs: {total_runs} ({total_runs // len(seeds)} configs × {len(seeds)} seeds)")
+    logger.info(f"{'='*70}")
+
+    if dry_run:
+        logger.info("\n[DRY RUN] Would execute:")
+        for dataset in datasets_to_run:
+            ds_config = DATASETS[dataset]
+            ds_tasks = tasks if tasks else ds_config["tasks"]
+            for task in ds_tasks:
+                for method in methods:
+                    task_label = f"{dataset}/{task}" if task else dataset
+                    logger.info(
+                        f"  {method} on {task_label} "
+                        f"(max_tokens={ds_config['max_new_tokens']}, seeds={seeds})"
+                    )
+        return
+
+    # Execute runs
+    for dataset in datasets_to_run:
+        ds_config = DATASETS[dataset]
+        ds_tasks = tasks if tasks else ds_config["tasks"]
+
+        for task in ds_tasks:
+            # Fetch seed prompt (once per task, shared across seeds)
+            try:
+                seed_prompt = get_seed_prompt(dataset, task, use_full_prompt=True)
+                logger.info(f"Loaded seed prompt for {dataset}/{task} ({len(seed_prompt)} chars)")
+            except Exception as e:
+                logger.error(f"Failed to load seed prompt for {dataset}/{task}: {e}")
+                seed_prompt = ""
+
+            for method in methods:
+                task_label = f"{dataset}/{task}" if task else dataset
+
+                for seed in seeds:
+                    run_key = f"{method}_{task_label}_seed{seed}"
+
+                    logger.info(f"\n{'='*60}")
+                    logger.info(f"RUN: {method} on {task_label} [seed={seed}]")
+                    logger.info(f"{'='*60}")
+
+                    try:
+                        config = build_run_config(
+                            base_config_path=config_path,
+                            method=method,
+                            dataset=dataset,
+                            task=task,
+                            max_new_tokens=ds_config["max_new_tokens"],
+                            seed_prompt=seed_prompt,
+                            seed=seed,
+                        )
+
+                        from pof.orchestration.runner import RunOrchestrator
+                        orchestrator = RunOrchestrator(config)
+                        result = orchestrator.run()
+
+                        results[run_key] = {
+                            "method": method,
+                            "dataset": dataset,
+                            "task": task,
+                            "seed": seed,
+                            "best_score": result.best_score,
+                            "total_time": result.total_time,
+                            "llm_calls": result.llm_usage.total_calls if result.llm_usage else 0,
+                            "total_tokens": result.llm_usage.total_tokens if result.llm_usage else 0,
+                            "best_prompt": result.best_prompt[:200],
+                        }
+                        completed_runs += 1
+                        logger.info(
+                            f"  ✓ Score: {result.best_score:.4f} | "
+                            f"Time: {result.total_time:.1f}s | Seed: {seed}"
+                        )
+
+                    except Exception as e:
+                        logger.error(f"  ✗ FAILED: {e}")
+                        results[run_key] = {
+                            "method": method,
+                            "dataset": dataset,
+                            "task": task,
+                            "seed": seed,
+                            "error": str(e),
+                        }
+                        failed_runs += 1
+
+    # Save results summary
+    output_dir = Path("outputs/swift_apex_benchmark")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    summary_path = output_dir / "experiment_results.json"
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+
+    # Print final summary
+    logger.info(f"\n{'='*70}")
+    logger.info(f"EXPERIMENT COMPLETE")
+    logger.info(f"  Completed: {completed_runs}/{total_runs}")
+    logger.info(f"  Failed: {failed_runs}/{total_runs}")
+    logger.info(f"  Seeds used: {seeds}")
+    logger.info(f"  Results saved to: {summary_path}")
+    logger.info(f"{'='*70}")
+
+    # Aggregate results across seeds (mean ± std)
+    _print_aggregated_results(results, seeds)
+
+
+def _print_aggregated_results(results: Dict[str, Any], seeds: List[int]) -> None:
+    """Print results aggregated across seeds (mean ± std)."""
+    from collections import defaultdict
+    import statistics
+
+    # Group by method+task (across seeds)
+    grouped: Dict[str, List[float]] = defaultdict(list)
+    for key, r in results.items():
+        if "error" not in r:
+            group_key = f"{r['method']}|{r['dataset']}/{r.get('task', '')}"
+            grouped[group_key].append(r["best_score"])
+
+    if not grouped:
+        return
+
+    logger.info(f"\n{'Method':<8} {'Dataset/Task':<40} {'Mean':<8} {'Std':<8} {'Runs':<5}")
+    logger.info("-" * 75)
+    for group_key in sorted(grouped.keys()):
+        scores = grouped[group_key]
+        method, task_label = group_key.split("|", 1)
+        mean_score = statistics.mean(scores)
+        std_score = statistics.stdev(scores) if len(scores) > 1 else 0.0
+        logger.info(
+            f"{method:<8} {task_label:<40} "
+            f"{mean_score:<8.4f} {std_score:<8.4f} {len(scores)}/{len(seeds)}"
+        )
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run SWIFT & APEX benchmark experiment")
+    parser.add_argument(
+        "--methods", nargs="+", default=None,
+        help="Methods to run (default: swift apex)",
+    )
+    parser.add_argument(
+        "--datasets", nargs="+", default=None,
+        help="Datasets to run (default: bbh gsm8k humaneval)",
+    )
+    parser.add_argument(
+        "--tasks", nargs="+", default=None,
+        help="Specific BBH tasks to run (default: all 7)",
+    )
+    parser.add_argument(
+        "--config", type=str, default="experiments/configs/swift_apex_benchmark.yaml",
+        help="Path to base config YAML",
+    )
+    parser.add_argument(
+        "--seeds", nargs="+", type=int, default=None,
+        help="Random seeds (default: 42 123 7)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Print what would be run without executing",
+    )
+
+    args = parser.parse_args()
+
+    run_experiment(
+        methods=args.methods,
+        datasets=args.datasets,
+        tasks=args.tasks,
+        seeds=args.seeds,
+        config_path=args.config,
+        dry_run=args.dry_run,
+    )
+
+
+if __name__ == "__main__":
+    main()

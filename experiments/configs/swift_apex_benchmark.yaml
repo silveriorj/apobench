@@ -1,0 +1,74 @@
+# =============================================================================
+# POF Experiment Config: SWIFT & APEX on BBH, GSM8K, HumanEval
+# =============================================================================
+# Model: Qwen/Qwen3-4B-Instruct-2507
+# Eval samples: 44 per optimization step
+# Final test samples: 115 per dataset
+# CoT: Handled in output (max_new_tokens adjusted per task type)
+# =============================================================================
+
+# --- LLM Configuration ---
+llm:
+  backend: huggingface
+  model_name: Qwen/Qwen3-4B-Instruct-2507
+  device: auto
+  dtype: auto
+  batch_size: 1
+  thinking_mode: false
+
+# --- Evaluation Configuration ---
+evaluation:
+  sample_size: 44          # Samples per optimization eval step
+  full_eval_size: 115      # Final test evaluation samples
+  temperature: 0.0         # Greedy for evaluation
+  batch_size: 1
+  racing_enabled: true
+  racing_confidence: 0.05
+  racing_min_samples: 10
+  # max_new_tokens is overridden per-dataset below (CoT needs more tokens)
+
+# --- Optimizer Configuration (defaults, overridden per-run) ---
+optimizer:
+  population_size: 5
+  seed_prompt: ""          # Loaded dynamically from prompt repos
+
+# --- Output ---
+output_dir: outputs/swift_apex_benchmark
+seed: 42
+verbose: true
+
+# --- Multi-seed experiment ---
+# Each run is repeated with 3 random seeds for statistical robustness.
+# Seeds: 42, 123, 7
+seeds: [42, 123, 7]
+
+# =============================================================================
+# EXPERIMENT MATRIX
+# =============================================================================
+# This config defines the base settings. The experiment runner should iterate
+# over the combinations below. Use with the RunOrchestrator or experiment script.
+#
+# Methods: [swift, apex]
+#
+# Datasets & Tasks:
+#
+# --- BBH (max_new_tokens: 1024 for CoT reasoning) ---
+# Seed prompts fetched from: github.com/beeevita/EvoPrompt/main/BBH/lib_prompt/
+#
+#   - bbh/dyck_languages
+#   - bbh/causal_judgement
+#   - bbh/disambiguation_qa
+#   - bbh/formal_fallacies
+#   - bbh/hyperbaton
+#   - bbh/logical_deduction_five_objects
+#   - bbh/reasoning_about_colored_objects
+#
+# --- GSM8K (max_new_tokens: 512 for math CoT) ---
+# Seed prompt from: github.com/FranxYao/chain-of-thought-hub/.../prompt_simple_4_cases_ao.txt
+#
+#   - gsm8k (single task)
+#
+# --- HumanEval (max_new_tokens: 1024 for code generation) ---
+#   - humaneval (single task)
+#
+# =============================================================================

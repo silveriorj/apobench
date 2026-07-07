@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+.cache
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project outputs
+outputs/
+checkpoints/
+*.log
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
