@@ -157,11 +157,14 @@ class AuditTracker:
                     "mean_score",
                     "population_size",
                     "best_record_id",
+                    "operator_counts",
                     "timestamp",
                 ],
             )
             writer.writeheader()
             for gen in self.history.generations:
-                writer.writerow(gen.to_dict())
+                row = gen.to_dict()
+                row["operator_counts"] = json.dumps(row["operator_counts"])
+                writer.writerow(row)
 
         return path

@@ -107,18 +107,25 @@ class SWIFTOptimizer(BaseOptimizer):
     def _phase_failure_guided(self) -> List[PromptRecord]:
         """Phase 1: Structured failure-guided improvement.
 
-        For each elite, diagnose failures then engineer improvements.
+        Uses cached per_sample_details from init evaluation — no re-evaluation.
         """
         logger.info("[SWIFT Phase 1] Failure-guided improvement")
         candidates = list(self.population)
-        samples = self.dataset.get_eval_samples("dev", n=self.eval_sample_size)
 
         for record in self.population[:self.population_size]:
-            result = self.evaluator.evaluate(record.text, samples)
-            failures = [d for d in result.per_sample_details if not d["correct"]]
+            # Reuse details stored during _evaluate_population; only re-evaluate
+            # if the record was somehow created without them (edge case).
+            details = record.per_sample_details
+            if not details and record.text:
+                samples = self.dataset.get_eval_samples("dev", n=self.eval_sample_size)
+                result = self.evaluator.evaluate(record.text, samples)
+                details = result.per_sample_details
+                record.per_sample_details = details
+                record.score = result.score
+                record.performance_vector = result.performance_vector
 
+            failures = [d for d in details if not d["correct"]]
             if failures:
-                # Structured improvement: diagnose + engineer
                 improved = self._structured_improve(record.text, failures)
                 if improved:
                     candidates.append(self._create_record(

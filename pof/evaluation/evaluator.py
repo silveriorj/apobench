@@ -16,6 +16,13 @@ from pof.llm.base import BaseLLM
 
 logger = logging.getLogger(__name__)
 
+# Injected on every evaluation call so the model skips CoT and gives a direct
+# answer.  This lets max_new_tokens stay short (64) while scoring correctly.
+_EVAL_SYSTEM_PROMPT = (
+    "You output only the final answer. No explanation, no reasoning, no labels. "
+    "Be minimal and exact."
+)
+
 
 class Evaluator:
     """Evaluate prompts against task samples with optional racing.
@@ -148,9 +155,10 @@ class Evaluator:
         num_correct = 0
 
         for i, sample in enumerate(samples_to_use):
-            # Generate prediction
             eval_prompt = self._format_eval_prompt(prompt, sample["input"])
-            pred = self.llm.generate(eval_prompt, config)
+            pred = self.llm.generate(
+                eval_prompt, config, system_prompt=_EVAL_SYSTEM_PROMPT
+            )
 
             # Score
             target = sample["target"]
@@ -200,7 +208,9 @@ class Evaluator:
         all_predictions = []
         for i in range(0, len(prompts), self.batch_size):
             batch = prompts[i: i + self.batch_size]
-            predictions = self.llm.generate_batch(batch, config)
+            predictions = self.llm.generate_batch(
+                batch, config, system_prompt=_EVAL_SYSTEM_PROMPT
+            )
             all_predictions.extend(predictions)
         return all_predictions
 

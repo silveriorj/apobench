@@ -189,6 +189,7 @@ class BaseOptimizer(ABC):
                 result = self.evaluator.evaluate(record.text, samples)
                 record.score = result.score
                 record.performance_vector = result.performance_vector
+                record.per_sample_details = result.per_sample_details
                 record.scores["dev"] = result.score
 
     def _evaluate_with_racing(
@@ -203,6 +204,7 @@ class BaseOptimizer(ABC):
                 )
                 record.score = result.score
                 record.performance_vector = result.performance_vector
+                record.per_sample_details = result.per_sample_details
                 record.scores["dev"] = result.score
         return candidates
 

@@ -193,10 +193,16 @@ class APEXOptimizer(BaseOptimizer):
         if not record:
             return []
 
-        samples = self.dataset.get_eval_samples("dev", n=20)
-        result = self.evaluator.evaluate(record.text, samples)
-        failures = [d for d in result.per_sample_details if not d["correct"]]
+        details = record.per_sample_details
+        if not details and record.text:
+            samples = self.dataset.get_eval_samples("dev", n=self.eval_sample_size)
+            result = self.evaluator.evaluate(record.text, samples)
+            details = result.per_sample_details
+            record.per_sample_details = details
+            record.score = result.score
+            record.performance_vector = result.performance_vector
 
+        failures = [d for d in details if not d["correct"]]
         if not failures:
             return []
 

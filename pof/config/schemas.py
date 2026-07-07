@@ -28,7 +28,7 @@ class EvalConfig(BaseModel):
     
     sample_size: int = Field(default=50, description="Number of samples for evaluation")
     full_eval_size: int = Field(default=100, description="Full evaluation sample size")
-    max_new_tokens: int = Field(default=512, description="Max tokens for eval responses (CoT tasks need 512+)")
+    max_new_tokens: int = Field(default=64, description="Max tokens for eval responses (model is instructed to skip CoT)")
     temperature: float = Field(default=0.0, description="Temperature for eval (0 = greedy)")
     batch_size: int = Field(default=8, description="Batch size for evaluation (GPU batching)")
     racing_enabled: bool = Field(default=True, description="Enable Hoeffding racing")

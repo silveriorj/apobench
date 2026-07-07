@@ -42,6 +42,7 @@ class PromptRecord:
     generation_last_active: int = 0
     metadata: Dict[str, Any] = field(default_factory=dict)
     performance_vector: List[int] = field(default_factory=list)
+    per_sample_details: List[Dict[str, Any]] = field(default_factory=list)
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     text_hash: str = field(default="", repr=False)
     is_complete: bool = True
@@ -75,6 +76,7 @@ class PromptRecord:
             "generation_last_active": self.generation_last_active,
             "metadata": self.metadata,
             "performance_vector": self.performance_vector,
+            "per_sample_details": self.per_sample_details,
             "is_complete": self.is_complete,
         }
 
@@ -94,6 +96,7 @@ class PromptRecord:
             generation_last_active=data.get("generation_last_active", 0),
             metadata=data.get("metadata", {}),
             performance_vector=data.get("performance_vector", []),
+            per_sample_details=data.get("per_sample_details", []),
             is_complete=data.get("is_complete", True),
         )
 
