@@ -64,17 +64,22 @@ class RunOrchestrator:
         optimizer_cls = get_optimizer(self.config.optimizer.method)
 
         # Create optimizer instance
-        optimizer = optimizer_cls(
-            llm=llm,
-            dataset=dataset,
-            evaluator=evaluator,
-            population_size=self.config.optimizer.population_size,
-            num_iterations=self.config.optimizer.num_iterations,
-            seed_prompt=self.config.optimizer.seed_prompt,
-            eval_sample_size=self.config.evaluation.sample_size,
-            output_dir=self.config.output_dir,
+        # Note: num_iterations is passed via params if needed; some optimizers
+        # (SWIFT, APEX) hardcode their own iteration count.
+        init_kwargs = {
+            "llm": llm,
+            "dataset": dataset,
+            "evaluator": evaluator,
+            "population_size": self.config.optimizer.population_size,
+            "seed_prompt": self.config.optimizer.seed_prompt,
+            "eval_sample_size": self.config.evaluation.sample_size,
+            "output_dir": self.config.output_dir,
             **self.config.optimizer.params,
-        )
+        }
+        # Only pass num_iterations if explicitly set (non-default) and not already in params
+        if self.config.optimizer.num_iterations != 3 and "num_iterations" not in self.config.optimizer.params:
+            init_kwargs["num_iterations"] = self.config.optimizer.num_iterations
+        optimizer = optimizer_cls(**init_kwargs)
 
         # Run optimization
         logger.info(
