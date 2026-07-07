@@ -39,6 +39,11 @@ def create_score_function(task_type: str = "auto") -> ScoreFunction:
 
 def _score_auto(prediction: str, target: str) -> int:
     """Auto-detect task type and score accordingly."""
+    # First, try to extract the final answer from CoT output
+    extracted = _extract_cot_answer(prediction)
+    if extracted:
+        prediction = extracted
+
     target_clean = target.strip().lower()
 
     # Try boolean first
@@ -192,6 +197,53 @@ def _extract_boolean(text: str) -> Optional[bool]:
     if match:
         val = match.group(1).lower()
         return val in ("yes", "true")
+
+    return None
+
+
+def _extract_cot_answer(text: str) -> Optional[str]:
+    """Extract the final answer from Chain-of-Thought output.
+
+    Looks for common CoT answer patterns:
+    - "the answer is X"
+    - "So the answer is X"
+    - "#### X"
+    - "Answer: X"
+    - Last line after reasoning
+    """
+    if not text:
+        return None
+
+    # Pattern: "the answer is <answer>" (most common in BBH/GSM8K CoT)
+    match = re.search(
+        r"(?:so\s+)?the\s+answer\s+is\s+(.+?)(?:\.|$)",
+        text,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if match:
+        return match.group(1).strip()
+
+    # Pattern: "#### <answer>" (GSM8K format)
+    match = re.search(r"####\s*(.+?)$", text, re.MULTILINE)
+    if match:
+        return match.group(1).strip()
+
+    # Pattern: "Answer: <answer>"
+    match = re.search(r"Answer\s*:\s*(.+?)(?:\.|$)", text, re.IGNORECASE | re.MULTILINE)
+    if match:
+        return match.group(1).strip()
+
+    # Pattern: "Therefore, <answer>"
+    match = re.search(
+        r"(?:therefore|thus|hence|so),?\s+(.+?)(?:\.|$)",
+        text,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if match:
+        candidate = match.group(1).strip()
+        # Only use if it's short (likely an answer, not a sentence)
+        if len(candidate) < 100:
+            return candidate
 
     return None
 

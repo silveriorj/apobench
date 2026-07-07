@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from pof.core.exceptions import LLMError
@@ -24,12 +26,15 @@ class OpenAILLM(BaseLLM):
         model_name: str,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
+        max_workers: int = 16,
         **kwargs: Any,
     ):
         super().__init__(model_name, **kwargs)
         self._api_key = api_key
         self._base_url = base_url
         self._client = None
+        self._max_workers = max_workers
+        self._track_lock = threading.Lock()
         self._init_client()
 
     def _init_client(self) -> None:
@@ -70,7 +75,6 @@ class OpenAILLM(BaseLLM):
             )
             elapsed = time.time() - start
 
-            # Track usage from response
             usage = response.usage
             if usage:
                 self._track_call(
@@ -86,17 +90,40 @@ class OpenAILLM(BaseLLM):
         except Exception as e:
             raise LLMError(f"OpenAI API call failed: {e}") from e
 
+    def _track_call(self, input_tokens: int, output_tokens: int, elapsed: float, **kw) -> None:
+        """Thread-safe usage tracking."""
+        with self._track_lock:
+            super()._track_call(input_tokens, output_tokens, elapsed, **kw)
+
     def generate_batch(
         self,
         prompts: List[str],
         config: Optional[GenerationConfig] = None,
         system_prompt: Optional[str] = None,
     ) -> List[str]:
-        """Generate responses for multiple prompts (sequential API calls)."""
-        results = []
-        for prompt in prompts:
-            result = self.generate(prompt, config, system_prompt)
-            results.append(result)
+        """Generate responses for multiple prompts concurrently via thread pool."""
+        if not prompts:
+            return []
+        if len(prompts) == 1:
+            return [self.generate(prompts[0], config, system_prompt)]
+
+        results: List[str] = [""] * len(prompts)
+        workers = min(self._max_workers, len(prompts))
+
+        def _call(idx: int, prompt: str) -> tuple[int, str]:
+            return idx, self.generate(prompt, config, system_prompt)
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_call, i, p): i for i, p in enumerate(prompts)}
+            for future in as_completed(futures):
+                try:
+                    idx, text = future.result()
+                    results[idx] = text
+                except Exception as e:
+                    idx = futures[future]
+                    logger.error(f"Batch call {idx} failed: {e}")
+                    results[idx] = ""
+
         return results
 
     def _build_messages(

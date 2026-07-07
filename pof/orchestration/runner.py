@@ -22,6 +22,7 @@ from pof.evaluation.scoring import create_score_function
 from pof.llm.base import BaseLLM
 from pof.llm.factory import create_llm
 from pof.optimizers import get_optimizer
+from pof.core.budget import BudgetManager
 
 logger = logging.getLogger(__name__)
 
@@ -161,9 +162,16 @@ class RunOrchestrator:
         return results
 
     def _get_llm(self) -> BaseLLM:
-        """Get or create LLM instance."""
+        """Get or create LLM instance and attach budget manager."""
         if self._llm is None:
             self._llm = create_llm(self.config.llm)
+            # Attach budget manager (hard caps)
+            try:
+                budget_mgr = BudgetManager(self.config.budget)
+                budget_mgr.attach_llm(self._llm)
+                self._llm.attach_budget(budget_mgr)
+            except Exception as e:
+                logger.warning(f"Failed to attach budget manager: {e}")
         return self._llm
 
     def _get_dataset(self) -> TaskDataset:

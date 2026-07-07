@@ -13,7 +13,8 @@ llm:
   model_name: Qwen/Qwen3-4B-Instruct-2507
   device: auto
   dtype: auto
-  batch_size: 1
+  max_new_tokens: 512      # Operator generation tokens (mutation, crossover, EDA)
+  batch_size: 8            # Unused by HF backend directly; kept for reference
   thinking_mode: false
 
 # --- Evaluation Configuration ---
@@ -21,11 +22,11 @@ evaluation:
   sample_size: 44          # Samples per optimization eval step
   full_eval_size: 115      # Final test evaluation samples
   temperature: 0.0         # Greedy for evaluation
-  batch_size: 1
+  max_new_tokens: 512      # CoT needs space; experiment runner overrides per dataset type
+  batch_size: 8            # GPU batch size: 8 fits 4B model on 12GB+ VRAM
   racing_enabled: true
   racing_confidence: 0.05
   racing_min_samples: 10
-  # max_new_tokens is overridden per-dataset below (CoT needs more tokens)
 
 # --- Optimizer Configuration (defaults, overridden per-run) ---
 optimizer:
@@ -36,6 +37,14 @@ optimizer:
 output_dir: outputs/swift_apex_benchmark
 seed: 42
 verbose: true
+
+# --- Budget (hard caps) ---
+budget:
+  time_seconds: 3600         # 1 hour wall-clock cap
+  max_calls: 5000            # Total LLM calls cap
+  max_total_tokens: 5000000  # Combined input+output tokens cap
+  max_generations: 10        # Max optimization generations
+  early_stop_patience: 3     # Stop if no improvement for 3 consecutive generations
 
 # --- Multi-seed experiment ---
 # Each run is repeated with 3 random seeds for statistical robustness.

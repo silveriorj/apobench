@@ -35,3 +35,11 @@ class DatasetError(POFError):
     """Error loading or processing datasets."""
 
     pass
+
+
+class BudgetExceeded(POFError):
+    """Budget constraint exceeded (time, calls, tokens, or generations)."""
+
+    def __init__(self, message: str, kind: str = "generic"):
+        super().__init__(message)
+        self.kind = kind

@@ -22,6 +22,7 @@ from pof.core.types import EvalResult, GenerationConfig, OptimizationResult, Pro
 from pof.datasets.loader import TaskDataset
 from pof.evaluation.evaluator import Evaluator
 from pof.llm.base import BaseLLM
+from pof.core.exceptions import BudgetExceeded
 
 logger = logging.getLogger(__name__)
 
@@ -90,13 +91,38 @@ class BaseOptimizer(ABC):
                 f"{len(self.population)} candidates, best={self.best_record.score:.4f}"
             )
 
-            # Optimization loop
-            for i in range(self.num_iterations):
+            # Optimization loop (budget-aware)
+            budget_mgr = getattr(self.llm, "get_budget", None)
+            budget_mgr = budget_mgr() if callable(budget_mgr) else None
+            effective_iters = self.num_iterations
+            if budget_mgr and getattr(budget_mgr, "config", None) and getattr(budget_mgr.config, "max_generations", None):
+                try:
+                    effective_iters = min(self.num_iterations, int(budget_mgr.config.max_generations))
+                except Exception:
+                    pass
+            patience = 0
+            if budget_mgr and getattr(budget_mgr, "config", None):
+                try:
+                    patience = int(getattr(budget_mgr.config, "early_stop_patience", 0) or 0)
+                except Exception:
+                    patience = 0
+            last_best = self.best_record.score if self.best_record else 0.0
+            no_improve = 0
+
+            for i in range(effective_iters):
+                # Global budget stop check
+                if budget_mgr and budget_mgr.should_stop() is not None:
+                    logger.info(f"Budget exhausted before generation {self.generation+1}, stopping optimization")
+                    break
+
                 self.generation += 1
                 try:
                     new_population = self._step()
                 except StopIteration:
                     logger.info(f"Optimizer signaled early stop at generation {self.generation}")
+                    break
+                except BudgetExceeded as be:
+                    logger.info(f"Budget exhausted during generation {self.generation}: {be.kind}")
                     break
 
                 if new_population:
@@ -107,6 +133,17 @@ class BaseOptimizer(ABC):
                     f"[Gen {self.generation}] best={self.best_record.score:.4f}, "
                     f"pop_size={len(self.population)}"
                 )
+
+                # Early stopping based on patience (no improvement)
+                if patience > 0:
+                    if self.best_record and self.best_record.score > last_best + 1e-12:
+                        last_best = self.best_record.score
+                        no_improve = 0
+                    else:
+                        no_improve += 1
+                        if no_improve >= patience:
+                            logger.info(f"Early stopping: no improvement for {patience} consecutive generations")
+                            break
 
         except Exception as e:
             self.tracker.add_note(f"ERROR: {e}")

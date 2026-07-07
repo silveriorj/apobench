@@ -4,11 +4,23 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from pathlib import Path
 from typing import List, Optional
 
 from pof.config.loader import load_config
 from pof.orchestration.runner import RunOrchestrator
+
+
+def _add_budget_args(p: argparse.ArgumentParser) -> None:
+    # Hard-cap budget controls
+    p.add_argument("--time-seconds", type=int, default=None, help="Wall-clock time budget in seconds (hard cap)")
+    p.add_argument("--max-calls", type=int, default=None, help="Maximum total LLM calls (hard cap)")
+    p.add_argument("--max-total-tokens", type=int, default=None, help="Maximum total tokens (input+output)")
+    p.add_argument("--max-input-tokens", type=int, default=None, help="Maximum total input tokens")
+    p.add_argument("--max-output-tokens", type=int, default=None, help="Maximum total output tokens")
+    p.add_argument("--max-generations", type=int, default=None, help="Maximum optimization generations (hard cap)")
+    p.add_argument("--early-stop-patience", type=int, default=None, help="Early stopping patience (no-improvement generations)")
+    # Runtime control
+    p.add_argument("--eval-batch-size", type=int, default=None, help="Evaluation batch size override")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -20,26 +32,26 @@ def main(argv: Optional[List[str]] = None) -> int:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # --- run command ---
-    run_parser = subparsers.add_parser("run", help="Run a single optimization")
+    run_parser = subparsers.add_subparser("run") if hasattr(subparsers, "add_subparser") else subparsers.add_parser("run", help="Run a single optimization")
     run_parser.add_argument(
         "-c", "--config", type=str, default=None,
         help="Path to config file (YAML/JSON)",
     )
     run_parser.add_argument(
         "-m", "--method", type=str, default=None,
-        help="Optimization method (see, swift, apex, gaapo, capo, gepa)",
+        help="Optimization method (see, swift, apex, gaapo, capo, gepa, gspe)",
     )
     run_parser.add_argument(
         "--model", type=str, default=None,
-        help="Model name (e.g., Qwen/Qwen2.5-3B-Instruct)",
+        help="Model name (e.g., Qwen/Qwen3-4B-Instruct-2507)",
     )
     run_parser.add_argument(
         "--dataset", type=str, default=None,
-        help="Dataset name (bbh) or path to JSON file",
+        help="Dataset name (bbh/gsm8k/humaneval) or path to JSON file",
     )
     run_parser.add_argument(
         "--task", type=str, default=None,
-        help="Specific task within dataset",
+        help="Specific task within dataset (for BBH)",
     )
     run_parser.add_argument(
         "--seed-prompt", type=str, default=None,
@@ -53,16 +65,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         "-v", "--verbose", action="store_true",
         help="Verbose logging",
     )
+    _add_budget_args(run_parser)
 
     # --- benchmark command ---
     bench_parser = subparsers.add_parser("benchmark", help="Benchmark multiple methods")
     bench_parser.add_argument(
         "-c", "--config", type=str, default=None,
-        help="Path to config file",
+        help="Path to config file (YAML/JSON)",
     )
     bench_parser.add_argument(
         "--methods", type=str, nargs="+", default=None,
-        help="Methods to benchmark (default: all)",
+        help="Methods to benchmark (default: all registered)",
     )
     bench_parser.add_argument(
         "--model", type=str, default=None,
@@ -84,9 +97,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         "-v", "--verbose", action="store_true",
         help="Verbose logging",
     )
+    _add_budget_args(bench_parser)
 
     # --- list command ---
-    list_parser = subparsers.add_parser("list", help="List available optimizers")
+    subparsers.add_parser("list", help="List available optimizers")
 
     args = parser.parse_args(argv)
 
@@ -124,6 +138,26 @@ def main(argv: Optional[List[str]] = None) -> int:
     if getattr(args, "output", None):
         overrides["output_dir"] = args.output
 
+    # Budget overrides
+    if getattr(args, "time_seconds", None) is not None:
+        overrides.setdefault("budget", {})["time_seconds"] = args.time_seconds
+    if getattr(args, "max_calls", None) is not None:
+        overrides.setdefault("budget", {})["max_calls"] = args.max_calls
+    if getattr(args, "max_total_tokens", None) is not None:
+        overrides.setdefault("budget", {})["max_total_tokens"] = args.max_total_tokens
+    if getattr(args, "max_input_tokens", None) is not None:
+        overrides.setdefault("budget", {})["max_input_tokens"] = args.max_input_tokens
+    if getattr(args, "max_output_tokens", None) is not None:
+        overrides.setdefault("budget", {})["max_output_tokens"] = args.max_output_tokens
+    if getattr(args, "max_generations", None) is not None:
+        overrides.setdefault("budget", {})["max_generations"] = args.max_generations
+    if getattr(args, "early_stop_patience", None) is not None:
+        overrides.setdefault("budget", {})["early_stop_patience"] = args.early_stop_patience
+
+    # Evaluation batch size override
+    if getattr(args, "eval_batch_size", None) is not None:
+        overrides.setdefault("evaluation", {})["batch_size"] = args.eval_batch_size
+
     # Load config
     config_path = getattr(args, "config", None)
     config = load_config(config_path, overrides=overrides if overrides else None)
@@ -133,7 +167,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.command == "run":
         result = orchestrator.run()
-        print(f"\n✓ Optimization complete!")
+        print("\n\u2713 Optimization complete!")
         print(f"  Method: {result.method_name}")
         print(f"  Best score: {result.best_score:.4f}")
         print(f"  Time: {result.total_time:.1f}s")
@@ -143,7 +177,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif args.command == "benchmark":
         methods = getattr(args, "methods", None)
         results = orchestrator.benchmark(methods=methods)
-        print(f"\n✓ Benchmark complete! {len(results)} methods compared.")
+        print(f"\n\u2713 Benchmark complete! {len(results)} methods compared.")
         return 0
 
     return 0

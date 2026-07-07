@@ -107,6 +107,22 @@ class HuggingFaceLLM(BaseLLM):
         messages = self._build_messages(prompt, system_prompt)
         input_text = self._apply_chat_template(messages)
 
+        # Budget-aware max_new_tokens
+        budget = self.get_budget()
+        if budget is not None:
+            input_tokens_sum = len(self._tokenizer.encode(input_text))
+            eff_max = budget.plan_generation(input_tokens_sum, 1, config.max_new_tokens)
+            config = GenerationConfig(
+                max_new_tokens=eff_max,
+                temperature=config.temperature,
+                top_p=config.top_p,
+                top_k=config.top_k,
+                do_sample=config.do_sample,
+                num_return_sequences=config.num_return_sequences,
+                stop_sequences=list(config.stop_sequences),
+                repetition_penalty=config.repetition_penalty,
+            )
+
         start = time.time()
         output = self._generate_text(input_text, config)
         elapsed = time.time() - start
@@ -131,6 +147,23 @@ class HuggingFaceLLM(BaseLLM):
         config = config or GenerationConfig()
         messages_list = [self._build_messages(p, system_prompt) for p in prompts]
         input_texts = [self._apply_chat_template(m) for m in messages_list]
+
+        # Budget-aware max_new_tokens for batched generation
+        budget = self.get_budget()
+        if budget is not None:
+            total_input = sum(len(self._tokenizer.encode(t)) for t in input_texts)
+            prompts_in_call = len(input_texts)
+            eff_max = budget.plan_generation(total_input, prompts_in_call, config.max_new_tokens)
+            config = GenerationConfig(
+                max_new_tokens=eff_max,
+                temperature=config.temperature,
+                top_p=config.top_p,
+                top_k=config.top_k,
+                do_sample=config.do_sample,
+                num_return_sequences=config.num_return_sequences,
+                stop_sequences=list(config.stop_sequences),
+                repetition_penalty=config.repetition_penalty,
+            )
 
         start = time.time()
         outputs = self._generate_batch_texts(input_texts, config)

@@ -18,6 +18,7 @@ class BaseLLM(ABC):
     def __init__(self, model_name: str, **kwargs: Any):
         self.model_name = model_name
         self.usage = LLMUsageStats()
+        self._budget = None
 
     @abstractmethod
     def generate(
@@ -81,3 +82,12 @@ class BaseLLM(ABC):
     def get_usage(self) -> LLMUsageStats:
         """Get current usage statistics."""
         return self.usage
+
+    # ---- Budget integration ----
+    def attach_budget(self, budget: Any) -> None:
+        """Attach a BudgetManager-like object providing caps and usage checks."""
+        self._budget = budget
+
+    def get_budget(self) -> Any:
+        """Return attached budget manager (if any)."""
+        return self._budget

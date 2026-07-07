@@ -174,10 +174,20 @@ def _load_bbh(task: str, num_samples: int, seed: int) -> TaskDataset:
             f"Unknown BBH task: {task}. Available: {BBH_TASKS}"
         )
 
+    # Prefer a script-free dataset to comply with datasets>=5 restrictions
     try:
-        dataset = hf_load_dataset("maveriq/bigbenchhard", task, trust_remote_code=True)
-    except Exception as e:
-        raise DatasetError(f"Failed to load BBH task '{task}': {e}") from e
+        # Community mirror with per-task subsets and no loading script
+        dataset = hf_load_dataset("lukaemon/bbh", task)
+    except Exception as e1:
+        # Fallback to original repo if available (may fail on newer datasets versions)
+        try:
+            dataset = hf_load_dataset("maveriq/bigbenchhard", task)
+        except Exception as e2:
+            raise DatasetError(
+                f"Failed to load BBH task '{task}': lukaemon/bbh error: {e1}; "
+                f"maveriq/bigbenchhard error: {e2}. "
+                "Tip: use datasets<3.0 for script-based loaders or switch to lukaemon/bbh."
+            ) from e2
 
     # BBH has a single 'train' split
     split_data = dataset["train"] if "train" in dataset else dataset[list(dataset.keys())[0]]

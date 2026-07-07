@@ -13,7 +13,7 @@ class LLMConfig(BaseModel):
     model_name: str = Field(default="Qwen/Qwen2.5-3B-Instruct", description="Model identifier")
     device: str = Field(default="auto", description="Device: 'auto', 'cuda', 'cpu'")
     dtype: str = Field(default="auto", description="Dtype: 'auto', 'float16', 'bfloat16'")
-    max_new_tokens: int = Field(default=256, description="Default max new tokens for generation")
+    max_new_tokens: int = Field(default=512, description="Default max new tokens for generation")
     temperature: float = Field(default=0.7, description="Default temperature")
     top_p: float = Field(default=0.95, description="Default top-p")
     batch_size: int = Field(default=8, description="Batch size for parallel evaluation")
@@ -25,15 +25,27 @@ class LLMConfig(BaseModel):
 
 class EvalConfig(BaseModel):
     """Evaluation configuration."""
-
+    
     sample_size: int = Field(default=50, description="Number of samples for evaluation")
     full_eval_size: int = Field(default=100, description="Full evaluation sample size")
-    max_new_tokens: int = Field(default=32, description="Max tokens for eval responses")
+    max_new_tokens: int = Field(default=512, description="Max tokens for eval responses (CoT tasks need 512+)")
     temperature: float = Field(default=0.0, description="Temperature for eval (0 = greedy)")
-    batch_size: int = Field(default=8, description="Batch size for evaluation")
+    batch_size: int = Field(default=8, description="Batch size for evaluation (GPU batching)")
     racing_enabled: bool = Field(default=True, description="Enable Hoeffding racing")
     racing_confidence: float = Field(default=0.05, description="Racing confidence level (alpha)")
     racing_min_samples: int = Field(default=10, description="Minimum samples before racing")
+
+
+class BudgetConfig(BaseModel):
+    """Run-level budget constraints (hard caps)."""
+
+    time_seconds: Optional[int] = Field(default=None, description="Wall-clock time budget in seconds (None = no cap)")
+    max_calls: Optional[int] = Field(default=None, description="Maximum total LLM calls")
+    max_total_tokens: Optional[int] = Field(default=None, description="Maximum total tokens (input+output)")
+    max_input_tokens: Optional[int] = Field(default=None, description="Maximum total input tokens")
+    max_output_tokens: Optional[int] = Field(default=None, description="Maximum total output tokens")
+    max_generations: Optional[int] = Field(default=None, description="Maximum optimization generations")
+    early_stop_patience: int = Field(default=0, description="Stop if no improvement for this many consecutive generations")
 
 
 class OptimizerConfig(BaseModel):
@@ -59,11 +71,12 @@ class DatasetConfig(BaseModel):
 
 class RunConfig(BaseModel):
     """Top-level run configuration combining all sub-configs."""
-
+    
     llm: LLMConfig = Field(default_factory=LLMConfig)
     evaluation: EvalConfig = Field(default_factory=EvalConfig)
     optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
     dataset: DatasetConfig = Field(default_factory=DatasetConfig)
+    budget: BudgetConfig = Field(default_factory=BudgetConfig)
     output_dir: str = Field(default="outputs", description="Output directory for results")
     seed: int = Field(default=42, description="Random seed")
     verbose: bool = Field(default=True, description="Verbose logging")

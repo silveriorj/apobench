@@ -114,7 +114,7 @@ class EvalResult:
 class GenerationConfig:
     """Configuration for LLM text generation."""
 
-    max_new_tokens: int = 256
+    max_new_tokens: int = 512
     temperature: float = 0.7
     top_p: float = 0.95
     top_k: int = 50
