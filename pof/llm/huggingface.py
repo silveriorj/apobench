@@ -127,9 +127,10 @@ class HuggingFaceLLM(BaseLLM):
         output = self._generate_text(input_text, config)
         elapsed = time.time() - start
 
-        # Track usage
         input_tokens = len(self._tokenizer.encode(input_text))
         output_tokens = len(self._tokenizer.encode(output))
+        tok_per_sec = output_tokens / elapsed if elapsed > 0 else 0
+        logger.info(f"[LLM] {elapsed:.1f}s | {output_tokens}tok out | {tok_per_sec:.0f} tok/s")
         self._track_call(input_tokens, output_tokens, elapsed)
 
         return self._clean_output(output)
@@ -169,9 +170,13 @@ class HuggingFaceLLM(BaseLLM):
         outputs = self._generate_batch_texts(input_texts, config)
         elapsed = time.time() - start
 
-        # Track usage (approximate)
         total_input = sum(len(self._tokenizer.encode(t)) for t in input_texts)
         total_output = sum(len(self._tokenizer.encode(o)) for o in outputs)
+        tok_per_sec = total_output / elapsed if elapsed > 0 else 0
+        logger.info(
+            f"[LLM] {elapsed:.1f}s | batch={len(input_texts)}"
+            f" ≈{total_output // max(len(outputs), 1)}tok/prompt out | {tok_per_sec:.0f} tok/s"
+        )
         self._track_call(total_input, total_output, elapsed)
 
         return [self._clean_output(o) for o in outputs]
@@ -192,22 +197,36 @@ class HuggingFaceLLM(BaseLLM):
         return messages
 
     def _apply_chat_template(self, messages: List[Dict[str, str]]) -> str:
-        """Apply tokenizer's chat template."""
+        """Apply tokenizer's chat template.
+
+        Passes enable_thinking so Qwen3 respects thinking_mode=False.
+        Falls back gracefully for tokenizers that don't support the kwarg.
+        """
         try:
             return self._tokenizer.apply_chat_template(
                 messages,
                 tokenize=False,
                 add_generation_prompt=True,
+                enable_thinking=self.thinking_mode,
             )
+        except TypeError:
+            # Tokenizer doesn't support enable_thinking (non-Qwen3 model)
+            try:
+                return self._tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+            except Exception:
+                pass
         except Exception:
-            # Fallback: simple formatting
-            parts = []
-            for msg in messages:
-                role = msg["role"]
-                content = msg["content"]
-                parts.append(f"<|{role}|>\n{content}")
-            parts.append("<|assistant|>\n")
-            return "\n".join(parts)
+            pass
+        # Plain-text fallback
+        parts = []
+        for msg in messages:
+            parts.append(f"<|{msg['role']}|>\n{msg['content']}")
+        parts.append("<|assistant|>\n")
+        return "\n".join(parts)
 
     @torch.inference_mode()
     def _generate_text(self, input_text: str, config: GenerationConfig) -> str:
@@ -288,10 +307,8 @@ class HuggingFaceLLM(BaseLLM):
         return results
 
     def _clean_output(self, text: str) -> str:
-        """Clean generated output — strip thinking tags if present."""
-        if self.thinking_mode:
-            # Remove <think>...</think> blocks
-            text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+        """Strip <think>…</think> blocks unconditionally — they are never useful output."""
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
         return text.strip()
 
     def cleanup(self) -> None:

@@ -79,13 +79,17 @@ class Evaluator:
             do_sample=self.temperature > 0,
         )
 
-        # Build evaluation prompts
+        n_batches = math.ceil(len(samples) / self.batch_size)
+        logger.info(
+            f"[Eval] {len(samples)} samples | batch_size={self.batch_size}"
+            f" → {n_batches} batch(es) | max_tokens={self.max_new_tokens}"
+        )
+
         eval_prompts = [
             self._format_eval_prompt(prompt, sample["input"])
             for sample in samples
         ]
 
-        # Batch generate
         predictions = self._batch_generate(eval_prompts, config)
 
         # Score
@@ -107,6 +111,7 @@ class Evaluator:
 
         total = len(samples)
         accuracy = num_correct / total if total > 0 else 0.0
+        logger.info(f"[Eval] score={accuracy:.3f} ({num_correct}/{total} correct)")
 
         return EvalResult(
             score=accuracy,
@@ -144,6 +149,11 @@ class Evaluator:
         max_samples = max_samples or len(samples)
         samples_to_use = samples[:max_samples]
 
+        logger.info(
+            f"[Racing] baseline={baseline_score:.3f} | up to {len(samples_to_use)} samples"
+            f" | max_tokens={self.max_new_tokens}"
+        )
+
         config = GenerationConfig(
             max_new_tokens=self.max_new_tokens,
             temperature=self.temperature,
@@ -160,7 +170,6 @@ class Evaluator:
                 eval_prompt, config, system_prompt=_EVAL_SYSTEM_PROMPT
             )
 
-            # Score
             target = sample["target"]
             score = self.score_fn(pred, target)
             performance_vector.append(score)
@@ -172,20 +181,15 @@ class Evaluator:
                 "correct": bool(score),
             })
 
-            # Racing check after min_samples
             n = i + 1
             if n >= min_samples:
                 current_score = num_correct / n
-                # Hoeffding bound: P(|X - E[X]| >= t) <= 2*exp(-2*n*t^2)
-                # Solving for t: t = sqrt(ln(2/alpha) / (2*n))
                 bound = math.sqrt(math.log(2.0 / confidence) / (2 * n))
 
-                # If upper bound of current score is below baseline, terminate
                 if current_score + bound < baseline_score:
-                    logger.debug(
-                        f"Racing: terminated at {n}/{len(samples_to_use)} samples "
-                        f"(score={current_score:.3f}, bound={bound:.3f}, "
-                        f"baseline={baseline_score:.3f})"
+                    logger.info(
+                        f"[Racing] eliminated at {n}/{len(samples_to_use)} samples"
+                        f" (score={current_score:.3f}+{bound:.3f} < baseline={baseline_score:.3f})"
                     )
                     break
 
@@ -206,8 +210,11 @@ class Evaluator:
     ) -> List[str]:
         """Generate predictions in batches for efficiency."""
         all_predictions = []
-        for i in range(0, len(prompts), self.batch_size):
+        total = len(prompts)
+        n_batches = math.ceil(total / self.batch_size)
+        for batch_idx, i in enumerate(range(0, total, self.batch_size), start=1):
             batch = prompts[i: i + self.batch_size]
+            logger.info(f"[Eval] batch {batch_idx}/{n_batches} (samples {i+1}–{i+len(batch)}/{total})")
             predictions = self.llm.generate_batch(
                 batch, config, system_prompt=_EVAL_SYSTEM_PROMPT
             )

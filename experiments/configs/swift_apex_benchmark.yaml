@@ -19,10 +19,10 @@ llm:
 
 # --- Evaluation Configuration ---
 evaluation:
-  sample_size: 44          # Samples per optimization eval step
+  sample_size: 33          # Samples per optimization eval step
   full_eval_size: 115      # Final test evaluation samples
   temperature: 0.0         # Greedy for evaluation
-  max_new_tokens: 64       # Short direct answers; model is instructed to skip CoT
+  max_new_tokens: 32       # Short direct answers; model is instructed to skip CoT
   batch_size: 8            # GPU batch size: 8 fits 4B model on 12GB+ VRAM
   racing_enabled: true
   racing_confidence: 0.05

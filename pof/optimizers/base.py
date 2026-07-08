@@ -184,13 +184,19 @@ class BaseOptimizer(ABC):
     def _evaluate_population(self, population: List[PromptRecord]) -> None:
         """Evaluate all candidates in the population."""
         samples = self.dataset.get_eval_samples("dev", n=self.eval_sample_size)
-        for record in population:
-            if record.score == 0.0 and record.text:
-                result = self.evaluator.evaluate(record.text, samples)
-                record.score = result.score
-                record.performance_vector = result.performance_vector
-                record.per_sample_details = result.per_sample_details
-                record.scores["dev"] = result.score
+        to_eval = [r for r in population if r.score == 0.0 and r.text]
+        logger.info(f"[Pop eval] {len(to_eval)} candidates to evaluate")
+        for idx, record in enumerate(to_eval, start=1):
+            logger.info(
+                f"[Pop eval] candidate {idx}/{len(to_eval)}"
+                f" op={record.operator} prompt={record.text[:60]!r}..."
+            )
+            result = self.evaluator.evaluate(record.text, samples)
+            record.score = result.score
+            record.performance_vector = result.performance_vector
+            record.per_sample_details = result.per_sample_details
+            record.scores["dev"] = result.score
+            logger.info(f"[Pop eval] candidate {idx}/{len(to_eval)} → score={result.score:.3f}")
 
     def _evaluate_with_racing(
         self, candidates: List[PromptRecord], baseline_score: float
@@ -269,7 +275,7 @@ class BaseOptimizer(ABC):
     # --- Shared generation techniques ---
 
     def _lamarckian_generate(
-        self, samples: List[Dict[str, str]], n: int = 1
+        self, samples: List[Dict[str, str]], n: int = 1, _label: str = "lamarckian"
     ) -> List[str]:
         """Lamarckian operator: reverse-engineer instruction from I/O pairs.
 
