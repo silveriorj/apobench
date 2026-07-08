@@ -14,7 +14,7 @@ llm:
   device: auto
   dtype: auto
   max_new_tokens: 512      # Operator generation tokens (mutation, crossover, EDA)
-  batch_size: 8            # Unused by HF backend directly; kept for reference
+  batch_size: 4            # Unused by HF backend directly; kept for reference
   thinking_mode: false
 
 # --- Evaluation Configuration ---
@@ -23,7 +23,7 @@ evaluation:
   full_eval_size: 115      # Final test evaluation samples
   temperature: 0.0         # Greedy for evaluation
   max_new_tokens: 32       # Short direct answers; model is instructed to skip CoT
-  batch_size: 8            # GPU batch size: 8 fits 4B model on 12GB+ VRAM
+  batch_size: 4            # GPU batch size: 8 fits 4B model on 12GB+ VRAM
   racing_enabled: true
   racing_confidence: 0.05
   racing_min_samples: 10
