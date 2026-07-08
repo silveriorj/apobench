@@ -206,18 +206,22 @@ def _load_bbh(task: str, num_samples: int, seed: int) -> TaskDataset:
     rng = random.Random(seed)
     rng.shuffle(all_samples)
 
-    # Limit total samples
-    all_samples = all_samples[:num_samples]
+    # Fixed-size splits: test is reserved first (held-out, fixed at 115),
+    # train (few-shot) takes 8, dev gets everything else (≥50 for candidate eval).
+    # BBH tasks have 187-250 examples, so dev ends up with 64-127 samples.
+    # Small tasks (e.g. penguins_in_a_table, 146 examples) shrink train to 3
+    # and the dev floor to 33 so the held-out test stays as close to 115 as possible.
+    if len(all_samples) >= 8 + 50 + 115:
+        n_train = 8
+        n_test = min(115, max(1, len(all_samples) - n_train - 50))
+    else:
+        n_train = 3
+        n_test = min(115, max(1, len(all_samples) - n_train - 33))
+    n_dev = len(all_samples) - n_test - n_train
 
-    # Split: 10% train (few-shot), 30% dev, 60% test
-    n_train = max(3, len(all_samples) // 10)
-    n_remaining = len(all_samples) - n_train
-    n_dev = max(1, round(n_remaining * 0.333))
-    n_test = n_remaining - n_dev
-
-    train = all_samples[:n_train]
-    dev = all_samples[n_train: n_train + n_dev]
-    test = all_samples[n_train + n_dev:]
+    test = all_samples[:n_test]
+    train = all_samples[n_test: n_test + n_train]
+    dev = all_samples[n_test + n_train:]
 
     # Detect task type
     task_type = _detect_task_type(train)
@@ -288,13 +292,14 @@ def _detect_task_type(samples: List[Dict[str, str]]) -> str:
 
     targets = [s["target"].strip().lower() for s in samples[:20]]
 
-    # Check boolean
-    bool_values = {"true", "false", "yes", "no"}
+    # Check boolean (includes valid/invalid, e.g. BBH formal_fallacies)
+    bool_values = {"true", "false", "yes", "no", "valid", "invalid"}
     if all(t in bool_values for t in targets):
         return "boolean"
 
-    # Check MCQ
-    if all(len(t) == 1 and t.isalpha() for t in targets):
+    # Check MCQ: single letter with optional parens — "A", "(A)", "a)"
+    import re
+    if all(re.fullmatch(r"\(?[a-z]\)?", t) for t in targets):
         return "mcq"
 
     # Check numeric

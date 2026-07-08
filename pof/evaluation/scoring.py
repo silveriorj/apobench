@@ -46,12 +46,12 @@ def _score_auto(prediction: str, target: str) -> int:
 
     target_clean = target.strip().lower()
 
-    # Try boolean first
-    if target_clean in ("true", "false", "yes", "no"):
+    # Try boolean first (includes valid/invalid, e.g. BBH formal_fallacies)
+    if target_clean in ("true", "false", "yes", "no", "valid", "invalid"):
         return _score_boolean(prediction, target)
 
-    # Try MCQ (single letter)
-    if len(target_clean) == 1 and target_clean.isalpha():
+    # Try MCQ: single letter with optional parens — "A", "(A)", "a)"
+    if re.fullmatch(r"\(?([A-Za-z])\)?", target_clean):
         return _score_mcq(prediction, target)
 
     # Try numeric
@@ -59,7 +59,10 @@ def _score_auto(prediction: str, target: str) -> int:
     if target_num is not None:
         return _score_math(prediction, target)
 
-    # Fallback to text matching
+    # Fallback to text matching (JSON answer extracted first if present)
+    json_match = re.search(r'"answer"\s*:\s*"([^"]*)"', prediction)
+    if json_match:
+        prediction = json_match.group(1)
     return _score_text(prediction, target)
 
 

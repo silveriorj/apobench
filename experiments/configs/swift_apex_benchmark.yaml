@@ -19,8 +19,8 @@ llm:
 
 # --- Evaluation Configuration ---
 evaluation:
-  sample_size: 33          # Samples per optimization eval step
-  full_eval_size: 150      # Final test evaluation samples (capped by test split size ~112-150)
+  sample_size: 50          # Samples per optimization eval step (from dev split)
+  full_eval_size: 115      # Final test evaluation samples (fixed test split)
   temperature: 0.0         # Greedy for evaluation
   max_new_tokens: 32       # Short direct answers; model is instructed to skip CoT
   batch_size: 4            # GPU batch size: 8 fits 4B model on 12GB+ VRAM

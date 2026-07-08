@@ -1,18 +1,22 @@
-"""GEPA — Grammar-guided Evolutionary Prompt Architecture.
+"""GEPA — Genetic-Pareto prompt optimizer.
 
-A proposed method inspired by Grammatical Evolution (Saletta & Ferretti, GECCO 2024)
-that uses structured prompt templates with evolvable components:
+Based on Agrawal et al., arXiv:2507.19457 ("GEPA: Reflective Prompt Evolution
+Can Outperform Reinforcement Learning"). Core algorithm:
 
-1. Decomposes prompts into structural components (role, task, format, constraints)
-2. Evolves each component independently via grammar rules
-3. Recombines components into full prompts
-4. Uses structured crossover at the component level
+1. Maintain a candidate pool with per-instance scores on a fixed dev set
+2. Select the next candidate to evolve via Pareto-based sampling:
+   candidates that achieve the best score on at least one instance form the
+   Pareto front; sample proportional to how many instances each one wins
+3. Reflective mutation: run the candidate on a minibatch, collect failure
+   traces, and have the LLM reflect on them in natural language to diagnose
+   problems and propose an improved prompt
+4. Accept the child only if it improves over its parent on the minibatch;
+   accepted children are evaluated on the full dev set and join the pool
 
-Key features:
-- Component-level evolution (more targeted than full-prompt mutation)
-- Grammar-guided generation ensures structural validity
-- Modular prompt architecture enables fine-grained optimization
-- Component-level crossover preserves good sub-structures
+Single-prompt adaptation: the paper targets compound AI systems with multiple
+modules; here the system has one instruction module, so system-aware merge
+(crossover across modules) is omitted and reflective mutation is the sole
+variation operator, per the paper's single-module ablation.
 """
 from __future__ import annotations
 
@@ -22,19 +26,16 @@ from typing import Any, Dict, List, Optional
 
 from pof.core.types import PromptRecord
 from pof.optimizers import register_optimizer
-from pof.optimizers.base import BaseOptimizer
+from pof.optimizers.base import BaseOptimizer, _IMPROVE_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
-
-# Prompt component categories
-COMPONENTS = ["role", "task", "format", "constraints", "examples"]
 
 
 @register_optimizer("gepa")
 class GEPAOptimizer(BaseOptimizer):
-    """GEPA — Grammar-guided Evolutionary Prompt Architecture.
+    """GEPA — Genetic-Pareto reflective prompt evolution.
 
-    Proposed method: evolves prompt components independently.
+    Reference: Agrawal et al., arXiv:2507.19457.
     """
 
     name = "gepa"
@@ -44,9 +45,9 @@ class GEPAOptimizer(BaseOptimizer):
         llm,
         dataset,
         evaluator,
-        population_size: int = 6,
-        num_iterations: int = 4,
-        component_mutation_rate: float = 0.4,
+        population_size: int = 5,
+        num_iterations: int = 6,
+        minibatch_size: int = 8,
         **kwargs,
     ):
         super().__init__(
@@ -57,254 +58,151 @@ class GEPAOptimizer(BaseOptimizer):
             num_iterations=num_iterations,
             **kwargs,
         )
-        self.component_mutation_rate = component_mutation_rate
-        # Store decomposed prompts: record_id -> {component: text}
-        self._decompositions: Dict[str, Dict[str, str]] = {}
+        self.minibatch_size = minibatch_size
+        # Fixed dev set so performance vectors are comparable across candidates
+        self._pareto_samples: List[Dict[str, str]] = []
+        # Candidate pool (grows over time; population is a top-k view of it)
+        self._pool: List[PromptRecord] = []
 
     def _init_population(self) -> List[PromptRecord]:
-        """Initialize with structurally diverse prompts."""
+        """Initialize the pool with the seed prompt (plus Lamarckian backup)."""
+        self._pareto_samples = self.dataset.get_eval_samples(
+            "dev", n=self.eval_sample_size
+        )
+
         candidates: List[PromptRecord] = []
-        train_samples = self.dataset.get_few_shot_examples(n=5)
-
-        # Generate initial prompts with explicit structure
-        for i in range(self.population_size + 2):
-            components = self._generate_components(train_samples, style=i)
-            full_prompt = self._assemble_prompt(components)
-            record = self._create_record(
-                full_prompt, operator="structured_init",
-                metadata={"components": components}
-            )
-            self._decompositions[record.id] = components
-            candidates.append(record)
-
-        # Add seed if provided
         if self.seed_prompt:
-            components = self._decompose_prompt(self.seed_prompt)
-            record = self._create_record(self.seed_prompt, operator="seed")
-            self._decompositions[record.id] = components
-            candidates.append(record)
+            candidates.append(self._create_record(self.seed_prompt, operator="seed"))
+        else:
+            # No seed: bootstrap one candidate from I/O examples
+            train_samples = self.dataset.get_few_shot_examples(n=5)
+            for text in self._lamarckian_generate(train_samples, n=1):
+                candidates.append(self._create_record(text, operator="lamarckian_init"))
 
-        self._evaluate_population(candidates)
-        return self._select_top_k(candidates)
+        for record in candidates:
+            self._eval_on_pareto_set(record)
+
+        self._pool = list(candidates)
+        return self._select_top_k(self._pool)
 
     def _step(self) -> List[PromptRecord]:
-        """Component-level evolution step."""
-        logger.info(f"[GEPA Gen {self.generation}] Component evolution")
-        candidates = list(self.population)
+        """One GEPA iteration: Pareto-select → reflect → mutate → validate."""
+        logger.info(f"[GEPA Gen {self.generation}] Reflective mutation round")
 
-        # Component-level crossover
-        for i in range(0, len(self.population) - 1, 2):
-            parent_a = self.population[i]
-            parent_b = self.population[i + 1]
-            child = self._component_crossover(parent_a, parent_b)
-            if child:
-                candidates.append(child)
+        parent = self._pareto_select()
+        if parent is None:
+            raise StopIteration
 
-        # Component-level mutation
-        for record in self.population[:self.population_size]:
-            if random.random() < self.component_mutation_rate:
-                mutated = self._component_mutate(record)
-                if mutated:
-                    candidates.append(mutated)
+        # Sample a minibatch and collect traces for reflection
+        minibatch = random.sample(
+            self._pareto_samples, min(self.minibatch_size, len(self._pareto_samples))
+        )
+        parent_result = self.evaluator.evaluate(parent.text, minibatch)
+        traces = parent_result.per_sample_details
 
-        # Full-prompt refinement of best
-        best = self.population[0]
-        refined = self._refine_structure(best)
-        if refined:
-            candidates.append(refined)
+        # Reflective mutation from natural-language diagnosis of the traces
+        child_text = self._reflective_mutate(parent.text, traces)
+        if not child_text or not child_text.strip():
+            logger.debug("[GEPA] mutation produced empty prompt, skipping round")
+            return self._select_top_k(self._pool)
 
-        # Evaluate and select
-        new_candidates = [c for c in candidates if c.score == 0.0]
-        baseline = self.best_record.score if self.best_record else 0.0
-        self._evaluate_with_racing(new_candidates, baseline)
-        return self._select_top_k(candidates)
+        # Gate: child must beat parent on the same minibatch
+        child_result = self.evaluator.evaluate(child_text.strip(), minibatch)
+        if child_result.score <= parent_result.score:
+            logger.info(
+                f"[GEPA] child rejected on minibatch "
+                f"({child_result.score:.3f} <= {parent_result.score:.3f})"
+            )
+            return self._select_top_k(self._pool)
 
-    def _generate_components(
-        self, samples: List[Dict[str, str]], style: int = 0
-    ) -> Dict[str, str]:
-        """Generate prompt components with a specific style."""
-        examples_text = "\n".join(
-            f"Input: {s['input'][:60]}\nOutput: {s['target']}"
-            for s in samples[:3]
+        # Accepted: evaluate on the full Pareto set and add to pool
+        child = self._create_record(
+            child_text.strip(), operator="reflective_mutation",
+            parent_ids=[parent.id],
+        )
+        self._eval_on_pareto_set(child)
+        self._pool.append(child)
+        logger.info(
+            f"[GEPA] child accepted: minibatch {parent_result.score:.3f} → "
+            f"{child_result.score:.3f}, dev={child.score:.3f}"
         )
 
-        styles = [
-            "concise and direct",
-            "detailed and thorough",
-            "structured with clear steps",
-            "focused on edge cases",
-            "emphasizing output format",
-            "using analogies and examples",
-            "formal and precise",
-            "conversational and clear",
-        ]
-        style_desc = styles[style % len(styles)]
+        return self._select_top_k(self._pool)
 
-        meta_prompt = (
-            f"Generate a {style_desc} instruction for a task. "
-            f"Structure your response with these labeled sections:\n"
-            f"ROLE: (who the AI should act as)\n"
-            f"TASK: (what to do)\n"
-            f"FORMAT: (output format requirements)\n"
-            f"CONSTRAINTS: (rules and limitations)\n\n"
-            f"Based on these examples:\n{examples_text}\n\n"
-            f"Structured instruction:"
+    # --- GEPA internals ---
+
+    def _eval_on_pareto_set(self, record: PromptRecord) -> None:
+        """Evaluate a candidate on the fixed dev set (fills performance_vector)."""
+        result = self.evaluator.evaluate(record.text, self._pareto_samples)
+        record.score = result.score
+        record.performance_vector = result.performance_vector
+        record.per_sample_details = result.per_sample_details
+        record.scores["dev"] = result.score
+
+    def _pareto_select(self) -> Optional[PromptRecord]:
+        """Sample a candidate from the Pareto front.
+
+        For each dev instance, find the best per-instance score across the
+        pool. Candidates that attain that maximum on at least one instance
+        are on the front; sampling weight = number of instances they win.
+        """
+        pool = [r for r in self._pool if r.performance_vector]
+        if not pool:
+            return self._pool[0] if self._pool else None
+
+        n_instances = min(len(r.performance_vector) for r in pool)
+        wins: Dict[str, int] = {r.id: 0 for r in pool}
+
+        for i in range(n_instances):
+            best = max(r.performance_vector[i] for r in pool)
+            for r in pool:
+                if r.performance_vector[i] >= best:
+                    wins[r.id] += 1
+
+        front = [r for r in pool if wins[r.id] > 0]
+        if not front:
+            return max(pool, key=lambda r: r.score)
+
+        weights = [wins[r.id] for r in front]
+        return random.choices(front, weights=weights, k=1)[0]
+
+    def _reflective_mutate(
+        self, prompt: str, traces: List[Dict[str, Any]]
+    ) -> Optional[str]:
+        """Two-step reflective mutation: diagnose in natural language, then rewrite."""
+        failures = [t for t in traces if not t.get("correct")]
+        shown = failures[:4] if failures else traces[:4]
+        trace_text = "\n".join(
+            f"- Input: {t.get('input', '')[:120]}\n"
+            f"  Expected: {t.get('target', '')}\n"
+            f"  Model output: {t.get('prediction', '')[:120]}\n"
+            f"  Correct: {t.get('correct')}"
+            for t in shown
         )
 
-        result = self._generate_prompt(meta_prompt, temperature=0.8)
-        return self._parse_components(result)
-
-    def _parse_components(self, text: str) -> Dict[str, str]:
-        """Parse structured text into components."""
-        components = {
-            "role": "",
-            "task": "",
-            "format": "",
-            "constraints": "",
-        }
-
-        current_key = None
-        lines = text.split("\n")
-
-        for line in lines:
-            line_lower = line.strip().lower()
-            if line_lower.startswith("role:"):
-                current_key = "role"
-                components["role"] = line.split(":", 1)[1].strip()
-            elif line_lower.startswith("task:"):
-                current_key = "task"
-                components["task"] = line.split(":", 1)[1].strip()
-            elif line_lower.startswith("format:"):
-                current_key = "format"
-                components["format"] = line.split(":", 1)[1].strip()
-            elif line_lower.startswith("constraints:") or line_lower.startswith("constraint:"):
-                current_key = "constraints"
-                components["constraints"] = line.split(":", 1)[1].strip()
-            elif current_key and line.strip():
-                components[current_key] += " " + line.strip()
-
-        # Fallback: if parsing failed, put everything in task
-        if not any(components.values()):
-            components["task"] = text.strip()
-
-        return components
-
-    def _decompose_prompt(self, prompt: str) -> Dict[str, str]:
-        """Decompose an existing prompt into components via LLM."""
-        meta_prompt = (
-            "Decompose this instruction into structured components:\n"
-            "ROLE: (who the AI should act as)\n"
-            "TASK: (what to do)\n"
-            "FORMAT: (output format)\n"
-            "CONSTRAINTS: (rules)\n\n"
+        # Step 1: natural-language reflection on the traces
+        reflection_prompt = (
+            "An AI assistant used the instruction below and produced these "
+            "results. Reflect on what the instruction fails to convey: what "
+            "task rules, edge cases, or output format details is it missing? "
+            "Answer in 2-4 sentences.\n\n"
             f"Instruction:\n{prompt}\n\n"
-            "Decomposition:"
+            f"Execution traces:\n{trace_text}\n\n"
+            "Reflection:"
         )
-        result = self._generate_prompt(meta_prompt, temperature=0.3)
-        return self._parse_components(result)
-
-    def _assemble_prompt(self, components: Dict[str, str]) -> str:
-        """Assemble components into a full prompt."""
-        parts = []
-        if components.get("role"):
-            parts.append(components["role"])
-        if components.get("task"):
-            parts.append(components["task"])
-        if components.get("format"):
-            parts.append(f"Output format: {components['format']}")
-        if components.get("constraints"):
-            parts.append(f"Constraints: {components['constraints']}")
-        return "\n".join(parts) if parts else "Solve the task."
-
-    def _component_crossover(
-        self, parent_a: PromptRecord, parent_b: PromptRecord
-    ) -> Optional[PromptRecord]:
-        """Crossover at the component level."""
-        comp_a = self._decompositions.get(parent_a.id)
-        comp_b = self._decompositions.get(parent_b.id)
-
-        if not comp_a or not comp_b:
-            # Fallback to full-prompt crossover
-            text = self._crossover(parent_a.text, parent_b.text)
-            if text.strip():
-                record = self._create_record(
-                    text, operator="fallback_crossover",
-                    parent_ids=[parent_a.id, parent_b.id]
-                )
-                self._decompositions[record.id] = self._parse_components(text)
-                return record
+        reflection = self._generate_prompt(reflection_prompt, temperature=0.7)
+        if not reflection.strip():
             return None
 
-        # Randomly select components from each parent
-        child_components = {}
-        for key in COMPONENTS[:4]:  # role, task, format, constraints
-            if random.random() < 0.5:
-                child_components[key] = comp_a.get(key, "")
-            else:
-                child_components[key] = comp_b.get(key, "")
-
-        full_prompt = self._assemble_prompt(child_components)
-        record = self._create_record(
-            full_prompt, operator="component_crossover",
-            parent_ids=[parent_a.id, parent_b.id],
-            metadata={"components": child_components}
+        # Step 2: rewrite the instruction using the diagnosis
+        rewrite_prompt = (
+            "Rewrite the instruction to fix the issues identified in the "
+            "reflection. Keep what works; add the missing task rules or "
+            "format details. Output only the new instruction.\n\n"
+            f"Current instruction:\n{prompt}\n\n"
+            f"Reflection:\n{reflection.strip()}\n\n"
+            "Improved instruction:"
         )
-        self._decompositions[record.id] = child_components
-        return record
-
-    def _component_mutate(self, record: PromptRecord) -> Optional[PromptRecord]:
-        """Mutate a single component of the prompt."""
-        components = self._decompositions.get(record.id)
-        if not components:
-            components = self._decompose_prompt(record.text)
-
-        # Pick a random component to mutate
-        mutable = [k for k, v in components.items() if v]
-        if not mutable:
-            return None
-
-        target_component = random.choice(mutable)
-        original_value = components[target_component]
-
-        meta_prompt = (
-            f"Rewrite this {target_component} section to be more effective. "
-            f"Keep the same intent but improve clarity or precision.\n\n"
-            f"Original {target_component}: {original_value}\n\n"
-            f"Improved {target_component}:"
+        return self._generate_prompt(
+            rewrite_prompt, temperature=0.7, system_prompt=_IMPROVE_SYSTEM_PROMPT
         )
-        new_value = self._generate_prompt(meta_prompt, temperature=0.7)
-
-        if not new_value or not new_value.strip():
-            return None
-
-        # Create mutated components
-        new_components = dict(components)
-        new_components[target_component] = new_value.strip()
-        full_prompt = self._assemble_prompt(new_components)
-
-        new_record = self._create_record(
-            full_prompt, operator=f"mutate_{target_component}",
-            parent_ids=[record.id],
-            metadata={"mutated_component": target_component, "components": new_components}
-        )
-        self._decompositions[new_record.id] = new_components
-        return new_record
-
-    def _refine_structure(self, record: PromptRecord) -> Optional[PromptRecord]:
-        """Refine the overall structure/coherence of the best prompt."""
-        meta_prompt = (
-            "This instruction works well but could be more coherent. "
-            "Rewrite it to flow better while keeping all the key elements.\n\n"
-            f"Instruction:\n{record.text}\n\n"
-            "Refined instruction:"
-        )
-        result = self._generate_prompt(meta_prompt, temperature=0.5)
-        if not result or not result.strip():
-            return None
-
-        new_record = self._create_record(
-            result.strip(), operator="structure_refine",
-            parent_ids=[record.id]
-        )
-        self._decompositions[new_record.id] = self._parse_components(result)
-        return new_record

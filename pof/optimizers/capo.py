@@ -1,27 +1,27 @@
-"""CAPO — Confidence-Aware Prompt Optimization.
+"""CAPO — Cost-Aware Prompt Optimization.
 
-Based on Zehle et al., arXiv:2504.16005. Uses statistical confidence bounds
-to make optimization decisions:
+Based on Zehle et al., arXiv:2504.16005. An evolutionary algorithm with
+LLM operators that jointly optimizes instructions AND few-shot examples:
 
-1. Racing evaluation with Hoeffding bounds for candidate comparison
-2. Confidence-aware selection (only promote if statistically significant)
-3. Hill-climbing with statistical validation
-4. Budget-aware early stopping
+1. Genome = (instruction, few-shot example set) — both evolve together
+2. Crossover: LLM combines two parent instructions; child inherits a mix
+   of the parents' few-shot examples
+3. Mutation: LLM rewrites the instruction; few-shot set is mutated by
+   adding/removing/swapping examples
+4. Racing: candidates are eliminated early when statistically inferior
+   (Hoeffding bound), saving evaluation budget
+5. Length penalty: fitness = accuracy − gamma × (prompt length ratio),
+   pushing toward shorter prompts at equal accuracy
 
-Key features:
-- Statistically rigorous candidate comparison
-- Avoids promoting candidates that are only marginally better (noise)
-- Budget-efficient through racing
-- Conservative but reliable improvements
+Reference implementation: github.com/finitearth/capo
 """
 from __future__ import annotations
 
 import logging
-import math
 import random
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from pof.core.types import EvalResult, PromptRecord
+from pof.core.types import PromptRecord
 from pof.optimizers import register_optimizer
 from pof.optimizers.base import BaseOptimizer
 
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 @register_optimizer("capo")
 class CAPOOptimizer(BaseOptimizer):
-    """CAPO — Confidence-Aware Prompt Optimization.
+    """CAPO — Cost-Aware Prompt Optimization.
 
     Reference: Zehle et al., arXiv:2504.16005.
     """
@@ -44,9 +44,9 @@ class CAPOOptimizer(BaseOptimizer):
         evaluator,
         population_size: int = 5,
         num_iterations: int = 5,
-        confidence_level: float = 0.05,
-        min_improvement: float = 0.02,
-        hill_climb_attempts: int = 3,
+        max_few_shots: int = 3,
+        length_penalty: float = 0.05,
+        crossovers_per_iter: int = 4,
         **kwargs,
     ):
         super().__init__(
@@ -57,131 +57,159 @@ class CAPOOptimizer(BaseOptimizer):
             num_iterations=num_iterations,
             **kwargs,
         )
-        self.confidence_level = confidence_level
-        self.min_improvement = min_improvement
-        self.hill_climb_attempts = hill_climb_attempts
+        self.max_few_shots = max_few_shots
+        self.length_penalty = length_penalty
+        self.crossovers_per_iter = crossovers_per_iter
+        # record_id -> (instruction, few_shot_examples)
+        self._genomes: Dict[str, Tuple[str, List[Dict[str, str]]]] = {}
+        # Reference length for the penalty term (longest prompt seen so far)
+        self._max_length: int = 1
 
     def _init_population(self) -> List[PromptRecord]:
-        """Initialize with diverse candidates, evaluated with full confidence."""
-        candidates: List[PromptRecord] = []
-        train_samples = self.dataset.get_few_shot_examples(n=5)
+        """Initialize with instruction variants × random few-shot sets."""
+        train_samples = self.dataset.get_few_shot_examples(n=10)
 
-        # Diverse initialization
-        lamarckian = self._lamarckian_generate(train_samples, n=3)
-        for text in lamarckian:
-            candidates.append(self._create_record(text, operator="lamarckian_init"))
-
-        semantic = self._semantic_variation(
-            self.seed_prompt or "Solve the task.", n=3
-        )
-        for text in semantic:
-            candidates.append(self._create_record(text, operator="semantic_init"))
-
+        instructions: List[str] = []
         if self.seed_prompt:
-            candidates.append(self._create_record(self.seed_prompt, operator="seed"))
+            instructions.append(self.seed_prompt)
+        instructions.extend(
+            self._semantic_variation(
+                self.seed_prompt or "Solve the task.", n=self.population_size - 1
+            )
+        )
+        # Lamarckian backup if paraphrasing under-delivered
+        while len(instructions) < self.population_size:
+            extra = self._lamarckian_generate(train_samples, n=1)
+            if not extra:
+                break
+            instructions.extend(extra)
 
-        # Full evaluation for initial confidence
-        self._evaluate_population(candidates)
+        candidates: List[PromptRecord] = []
+        for instr in instructions[: self.population_size + 2]:
+            few_shots = self._sample_few_shots(train_samples)
+            candidates.append(self._make_candidate(instr, few_shots, "init"))
+
+        self._evaluate_penalized(candidates)
         return self._select_top_k(candidates)
 
     def _step(self) -> List[PromptRecord]:
-        """Confidence-aware optimization step.
+        """One CAPO generation: crossover → mutation → racing → selection."""
+        logger.info(f"[CAPO Gen {self.generation}] Evolutionary step")
+        train_samples = self.dataset.get_few_shot_examples(n=10)
+        offspring: List[PromptRecord] = []
 
-        For each candidate in population:
-        1. Generate improvement attempts (hill climbing)
-        2. Evaluate with racing
-        3. Only accept if statistically significantly better
-        """
-        logger.info(f"[CAPO Gen {self.generation}] Confidence-aware step")
-        improved_population = list(self.population)
+        # Crossover phase
+        for _ in range(self.crossovers_per_iter):
+            if len(self.population) < 2:
+                break
+            parent_a, parent_b = random.sample(
+                self.population[: self.population_size], 2
+            )
+            instr_a, shots_a = self._genome_of(parent_a)
+            instr_b, shots_b = self._genome_of(parent_b)
 
-        for i, record in enumerate(self.population[:self.population_size]):
-            # Try to improve this candidate
-            improved = self._hill_climb_with_confidence(record)
-            if improved and improved.score > record.score:
-                # Check if improvement is statistically significant
-                if self._is_significant_improvement(record, improved):
-                    improved_population.append(improved)
-                    logger.info(
-                        f"  Candidate {i}: improved {record.score:.3f} → {improved.score:.3f} "
-                        f"(significant)"
-                    )
-                else:
-                    logger.debug(
-                        f"  Candidate {i}: improvement not significant "
-                        f"({record.score:.3f} → {improved.score:.3f})"
-                    )
-
-        return self._select_top_k(improved_population)
-
-    def _hill_climb_with_confidence(self, record: PromptRecord) -> Optional[PromptRecord]:
-        """Attempt hill climbing with multiple strategies."""
-        best_candidate = None
-        best_score = record.score
-
-        for attempt in range(self.hill_climb_attempts):
-            # Choose improvement strategy
-            strategy = random.choice(["feedback", "semantic", "trajectory"])
-
-            if strategy == "feedback":
-                samples = self.dataset.get_eval_samples("dev", n=20)
-                result = self.evaluator.evaluate(record.text, samples)
-                failures = [d for d in result.per_sample_details if not d["correct"]]
-                if failures:
-                    new_text = self._feedback_improve(record.text, failures)
-                else:
-                    continue
-            elif strategy == "semantic":
-                variations = self._semantic_variation(record.text, n=1)
-                new_text = variations[0] if variations else None
-            else:  # trajectory
-                context = "\n".join(
-                    f"Score: {r.score:.3f} | {r.text[:60]}"
-                    for r in sorted(self.population, key=lambda r: r.score)[-3:]
-                )
-                meta_prompt = (
-                    f"Improve this instruction based on what works well:\n\n"
-                    f"Context (best performers):\n{context}\n\n"
-                    f"Current instruction:\n{record.text}\n\n"
-                    f"Improved instruction:"
-                )
-                new_text = self._generate_prompt(meta_prompt, temperature=0.7)
-
-            if not new_text or not new_text.strip():
+            child_instr = self._crossover(instr_a, instr_b)
+            if not child_instr.strip():
                 continue
-
-            # Evaluate with racing against current best
-            candidate = self._create_record(
-                new_text.strip(), operator=f"hill_climb_{strategy}",
-                parent_ids=[record.id]
+            # Few-shots: sample from the union of both parents' example sets
+            pool = shots_a + shots_b
+            k = min(len(pool), random.randint(0, self.max_few_shots))
+            child_shots = random.sample(pool, k) if k else []
+            child = self._make_candidate(
+                child_instr.strip(), child_shots, "capo_crossover",
+                parent_ids=[parent_a.id, parent_b.id],
             )
-            samples = self.dataset.get_eval_samples("dev", n=self.eval_sample_size)
-            result = self.evaluator.evaluate_with_racing(
-                candidate.text, samples, best_score,
-                confidence=self.confidence_level,
-            )
-            candidate.score = result.score
-            candidate.performance_vector = result.performance_vector
-            candidate.scores["dev"] = result.score
+            offspring.append(child)
 
-            if candidate.score > best_score:
-                best_candidate = candidate
-                best_score = candidate.score
+        # Mutation phase: each crossover child is mutated
+        mutated: List[PromptRecord] = []
+        for child in offspring:
+            instr, shots = self._genome_of(child)
+            new_instr = self._semantic_variation(instr, n=1)
+            new_shots = self._mutate_few_shots(shots, train_samples)
+            if new_instr:
+                mutant = self._make_candidate(
+                    new_instr[0], new_shots, "capo_mutation",
+                    parent_ids=[child.id],
+                )
+                mutated.append(mutant)
 
-        return best_candidate
+        # Racing evaluation against current best (penalized) fitness
+        candidates = offspring + mutated
+        baseline = self.best_record.score if self.best_record else 0.0
+        self._evaluate_with_racing(candidates, baseline)
+        self._apply_length_penalty(candidates)
 
-    def _is_significant_improvement(
-        self, baseline: PromptRecord, candidate: PromptRecord
-    ) -> bool:
-        """Check if improvement is statistically significant using Hoeffding bound."""
-        n = len(candidate.performance_vector)
-        if n == 0:
-            return False
+        survivors = self._select_top_k(list(self.population) + candidates)
+        return survivors
 
-        improvement = candidate.score - baseline.score
+    # --- CAPO internals ---
 
-        # Hoeffding bound for the difference
-        bound = math.sqrt(math.log(2.0 / self.confidence_level) / (2 * n))
+    def _make_candidate(
+        self,
+        instruction: str,
+        few_shots: List[Dict[str, str]],
+        operator: str,
+        parent_ids: Optional[List[str]] = None,
+    ) -> PromptRecord:
+        """Build a PromptRecord whose text = instruction + few-shot block."""
+        text = self._render_prompt(instruction, few_shots)
+        record = self._create_record(
+            text, operator=operator, parent_ids=parent_ids,
+            num_few_shots=len(few_shots),
+        )
+        self._genomes[record.id] = (instruction, few_shots)
+        self._max_length = max(self._max_length, len(text))
+        return record
 
-        # Significant if improvement exceeds bound AND minimum threshold
-        return improvement > bound and improvement >= self.min_improvement
+    def _genome_of(self, record: PromptRecord) -> Tuple[str, List[Dict[str, str]]]:
+        """Get (instruction, few_shots) for a record, falling back to raw text."""
+        return self._genomes.get(record.id, (record.text, []))
+
+    @staticmethod
+    def _render_prompt(instruction: str, few_shots: List[Dict[str, str]]) -> str:
+        if not few_shots:
+            return instruction
+        examples = "\n\n".join(
+            f"Input: {s['input']}\nOutput: {s['target']}" for s in few_shots
+        )
+        return f"{instruction}\n\nExamples:\n{examples}"
+
+    def _sample_few_shots(
+        self, train_samples: List[Dict[str, str]]
+    ) -> List[Dict[str, str]]:
+        k = random.randint(0, min(self.max_few_shots, len(train_samples)))
+        return random.sample(train_samples, k) if k else []
+
+    def _mutate_few_shots(
+        self,
+        shots: List[Dict[str, str]],
+        train_samples: List[Dict[str, str]],
+    ) -> List[Dict[str, str]]:
+        """Add, remove, or swap one example."""
+        shots = list(shots)
+        op = random.choice(["add", "remove", "swap"])
+        unused = [s for s in train_samples if s not in shots]
+
+        if op == "add" and unused and len(shots) < self.max_few_shots:
+            shots.append(random.choice(unused))
+        elif op == "remove" and shots:
+            shots.remove(random.choice(shots))
+        elif op == "swap" and shots and unused:
+            shots.remove(random.choice(shots))
+            shots.append(random.choice(unused))
+        return shots
+
+    def _evaluate_penalized(self, candidates: List[PromptRecord]) -> None:
+        """Full evaluation followed by the length penalty."""
+        self._evaluate_population(candidates)
+        self._apply_length_penalty(candidates)
+
+    def _apply_length_penalty(self, candidates: List[PromptRecord]) -> None:
+        """fitness = accuracy − gamma × (len / max_len). Raw accuracy kept in scores."""
+        for record in candidates:
+            if not record.text:
+                continue
+            record.scores["accuracy"] = record.scores.get("dev", record.score)
+            penalty = self.length_penalty * (len(record.text) / self._max_length)
+            record.score = max(0.0, record.scores["accuracy"] - penalty)

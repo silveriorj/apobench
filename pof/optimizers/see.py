@@ -48,6 +48,7 @@ class SEEOperator(Enum):
     EDA = "O_E"
     CROSSOVER = "O_C"
     SEMANTIC = "O_S"
+    ICL = "O_ICL"  # in-context example augmentation (joint optimization)
 
 
 @register_optimizer("see")
@@ -236,6 +237,25 @@ class SEEOptimizer(BaseOptimizer):
                     parent_ids=[parent_a.id, parent_b.id],
                 )
                 candidates.append(record)
+
+        # In-context example augmentation: SEE jointly optimizes instructions
+        # AND ICL exemplars (paper's "cohesive" optimization), so exemplar-
+        # augmented variants of the top candidates enter the search space.
+        train = self.dataset.get_few_shot_examples(n=6)
+        for record in self.population[:2]:
+            if not train:
+                break
+            k = random.randint(1, min(3, len(train)))
+            shots = random.sample(train, k)
+            examples = "\n\n".join(
+                f"Input: {s['input']}\nOutput: {s['target']}" for s in shots
+            )
+            icl_text = f"{record.text}\n\nExamples:\n{examples}"
+            candidates.append(self._create_record(
+                text=icl_text,
+                operator="O_ICL",
+                parent_ids=[record.id],
+            ))
 
         # Evaluate and select
         new_candidates = [c for c in candidates if c.score == 0.0]
