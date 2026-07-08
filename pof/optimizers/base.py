@@ -204,9 +204,9 @@ class BaseOptimizer(ABC):
         """Evaluate all candidates in the population."""
         samples = self.dataset.get_eval_samples("dev", n=self.eval_sample_size)
         to_eval = [r for r in population if r.score == 0.0 and r.text]
-        logger.info(f"[Pop eval] {len(to_eval)} candidates to evaluate")
+        logger.debug(f"[Pop eval] {len(to_eval)} candidates to evaluate")
         for idx, record in enumerate(to_eval, start=1):
-            logger.info(
+            logger.debug(
                 f"[Pop eval] candidate {idx}/{len(to_eval)}"
                 f" op={record.operator} prompt={record.text[:60]!r}..."
             )
@@ -215,7 +215,7 @@ class BaseOptimizer(ABC):
             record.performance_vector = result.performance_vector
             record.per_sample_details = result.per_sample_details
             record.scores["dev"] = result.score
-            logger.info(f"[Pop eval] candidate {idx}/{len(to_eval)} → score={result.score:.3f}")
+            logger.debug(f"[Pop eval] candidate {idx}/{len(to_eval)} → score={result.score:.3f}")
 
     def _evaluate_with_racing(
         self, candidates: List[PromptRecord], baseline_score: float

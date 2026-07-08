@@ -173,7 +173,7 @@ class HuggingFaceLLM(BaseLLM):
         total_input = sum(len(self._tokenizer.encode(t)) for t in input_texts)
         total_output = sum(len(self._tokenizer.encode(o)) for o in outputs)
         tok_per_sec = total_output / elapsed if elapsed > 0 else 0
-        logger.info(
+        logger.debug(
             f"[LLM] {elapsed:.1f}s | batch={len(input_texts)}"
             f" ≈{total_output // max(len(outputs), 1)}tok/prompt out | {tok_per_sec:.0f} tok/s"
         )

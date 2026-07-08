@@ -220,6 +220,7 @@ def run_experiment(
                             "task": task,
                             "seed": seed,
                             "best_score": result.best_score,
+                            "test_score": result.test_score,
                             "total_time": result.total_time,
                             "llm_calls": result.llm_usage.total_calls if result.llm_usage else 0,
                             "total_tokens": result.llm_usage.total_tokens if result.llm_usage else 0,
@@ -227,7 +228,7 @@ def run_experiment(
                         }
                         completed_runs += 1
                         logger.info(
-                            f"  ✓ Score: {result.best_score:.4f} | "
+                            f"  ✓ dev={result.best_score:.4f} | test={result.test_score:.4f} | "
                             f"Time: {result.total_time:.1f}s | Seed: {seed}"
                         )
 
@@ -268,26 +269,33 @@ def _print_aggregated_results(results: Dict[str, Any], seeds: List[int]) -> None
     from collections import defaultdict
     import statistics
 
-    # Group by method+task (across seeds)
-    grouped: Dict[str, List[float]] = defaultdict(list)
+    # Group by method+task (across seeds) — track both dev and test scores
+    grouped_dev: Dict[str, List[float]] = defaultdict(list)
+    grouped_test: Dict[str, List[float]] = defaultdict(list)
     for key, r in results.items():
         if "error" not in r:
             group_key = f"{r['method']}|{r['dataset']}/{r.get('task', '')}"
-            grouped[group_key].append(r["best_score"])
+            grouped_dev[group_key].append(r["best_score"])
+            grouped_test[group_key].append(r.get("test_score", 0.0))
 
-    if not grouped:
+    if not grouped_test:
         return
 
-    logger.info(f"\n{'Method':<8} {'Dataset/Task':<40} {'Mean':<8} {'Std':<8} {'Runs':<5}")
-    logger.info("-" * 75)
-    for group_key in sorted(grouped.keys()):
-        scores = grouped[group_key]
+    logger.info(
+        f"\n{'Method':<8} {'Dataset/Task':<38} "
+        f"{'Dev mean':<10} {'Test mean':<10} {'Test std':<10} {'Runs':<5}"
+    )
+    logger.info("-" * 85)
+    for group_key in sorted(grouped_test.keys()):
+        dev_scores = grouped_dev[group_key]
+        test_scores = grouped_test[group_key]
         method, task_label = group_key.split("|", 1)
-        mean_score = statistics.mean(scores)
-        std_score = statistics.stdev(scores) if len(scores) > 1 else 0.0
         logger.info(
-            f"{method:<8} {task_label:<40} "
-            f"{mean_score:<8.4f} {std_score:<8.4f} {len(scores)}/{len(seeds)}"
+            f"{method:<8} {task_label:<38} "
+            f"{statistics.mean(dev_scores):<10.4f} "
+            f"{statistics.mean(test_scores):<10.4f} "
+            f"{(statistics.stdev(test_scores) if len(test_scores) > 1 else 0.0):<10.4f} "
+            f"{len(test_scores)}/{len(seeds)}"
         )
 
 

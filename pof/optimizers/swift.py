@@ -60,29 +60,23 @@ class SWIFTOptimizer(BaseOptimizer):
         candidates: List[PromptRecord] = []
         train_samples = self.dataset.get_few_shot_examples(n=5)
 
-        logger.info("[Init] Lamarckian generation ×2 ...")
+        logger.debug("[Init] Lamarckian generation ×2 ...")
         lamarckian = self._lamarckian_generate(train_samples, n=2)
         for text in lamarckian:
             candidates.append(self._create_record(text, operator="lamarckian_init"))
-        logger.info(f"[Init] Lamarckian done → {len(lamarckian)} candidate(s)")
 
         base = self.seed_prompt or (candidates[0].text if candidates else "Solve the task.")
-        logger.info("[Init] Semantic variation ×2 ...")
+        logger.debug("[Init] Semantic variation ×2 ...")
         variations = self._semantic_variation(base, n=2)
         for text in variations:
             candidates.append(self._create_record(text, operator="zero_order_init"))
-        logger.info(f"[Init] Semantic variation done → {len(variations)} candidate(s)")
 
         if self.seed_prompt:
-            logger.info("[Init] Local edit variant ...")
             local_edit = self._local_edit(self.seed_prompt)
             if local_edit:
                 candidates.append(self._create_record(local_edit, operator="local_edit_init"))
-                logger.info("[Init] Local edit done")
-            else:
-                logger.info("[Init] Local edit returned empty — skipped")
 
-        logger.info("[Init] Few-shot variant (no LLM call) ...")
+        logger.debug("[Init] Few-shot variant ...")
         few_shot_prompt = self.dataset.format_few_shot_prompt(
             self.seed_prompt or "Solve the following task:", n_examples=3
         )

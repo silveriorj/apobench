@@ -89,6 +89,19 @@ class RunOrchestrator:
         )
         result = optimizer.optimize()
 
+        # Final test evaluation on held-out samples
+        test_samples = dataset.get_eval_samples("test", n=self.config.evaluation.full_eval_size)
+        if test_samples and result.best_prompt:
+            logger.info(
+                f"[Test eval] {len(test_samples)} samples on best prompt "
+                f"(dev score={result.best_score:.4f})"
+            )
+            test_result = evaluator.evaluate(result.best_prompt, test_samples)
+            result.test_score = test_result.score
+            logger.info(f"[Test eval] test_score={result.test_score:.4f}")
+        else:
+            logger.warning("[Test eval] skipped — no test samples or no best prompt")
+
         # Save audit trail
         optimizer.tracker.save_json()
         optimizer.tracker.save_csv()

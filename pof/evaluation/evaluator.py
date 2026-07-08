@@ -80,7 +80,7 @@ class Evaluator:
         )
 
         n_batches = math.ceil(len(samples) / self.batch_size)
-        logger.info(
+        logger.debug(
             f"[Eval] {len(samples)} samples | batch_size={self.batch_size}"
             f" → {n_batches} batch(es) | max_tokens={self.max_new_tokens}"
         )
@@ -156,7 +156,7 @@ class Evaluator:
         max_samples = max_samples or len(samples)
         samples_to_use = samples[:max_samples]
 
-        logger.info(
+        logger.debug(
             f"[Racing] baseline={baseline_score:.3f} | up to {len(samples_to_use)} samples"
             f" | max_tokens={self.max_new_tokens}"
         )
@@ -221,7 +221,7 @@ class Evaluator:
         n_batches = math.ceil(total / self.batch_size)
         for batch_idx, i in enumerate(range(0, total, self.batch_size), start=1):
             batch = prompts[i: i + self.batch_size]
-            logger.info(f"[Eval] batch {batch_idx}/{n_batches} (samples {i+1}–{i+len(batch)}/{total})")
+            logger.debug(f"[Eval] batch {batch_idx}/{n_batches} (samples {i+1}–{i+len(batch)}/{total})")
             predictions = self.llm.generate_batch(
                 batch, config, system_prompt=_EVAL_SYSTEM_PROMPT
             )
