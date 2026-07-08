@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # EXPERIMENT MATRIX
 # =============================================================================
 
-METHODS = ["swift", "apex"]
+METHODS = ["swift", "apex", "gaapo", "see", "capo"]  # Methods to run (default: all)
 
 # Random seeds for statistical robustness (3 runs per configuration)
 SEEDS = [42, 123, 7]
