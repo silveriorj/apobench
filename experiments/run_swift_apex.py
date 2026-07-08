@@ -41,39 +41,47 @@ METHODS = ["swift", "apex"]
 # Random seeds for statistical robustness (3 runs per configuration)
 SEEDS = [42, 123, 7]
 
-# BBH tasks with CoT prompts from EvoPrompt repo
-BBH_TASKS = [
-    "dyck_languages",
-    "causal_judgement",
-    "disambiguation_qa",
-    "formal_fallacies",
-    "hyperbaton",
-    "logical_deduction_five_objects",
-    "reasoning_about_colored_objects",
-]
-
-# Max new tokens per dataset type (CoT needs more tokens)
-MAX_NEW_TOKENS = {
-    "bbh": 32,
-    "gsm8k": 32,
-    "humaneval": 1024,  # Code generation needs space
+# Per-task eval max_new_tokens (eval output only; operator/LLM generation uses
+# llm.max_new_tokens from the YAML, which stays at 512).
+# BBH answers vary: dyck needs bracket sequences (~40 tok), most others are
+# single-word or letter answers (Yes/No, A/B/C, color name).
+EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
+    # BBH
+    "dyck_languages": 64,
+    "causal_judgement": 8,
+    "disambiguation_qa": 8,
+    "formal_fallacies": 8,
+    "hyperbaton": 8,
+    "logical_deduction_five_objects": 16,
+    "reasoning_about_colored_objects": 16,
+    # Other datasets
+    "gsm8k": 32,       # just the numeric answer
+    "humaneval": 1024,  # full function body
 }
+
+# Default fallback when task is not listed above
+_DEFAULT_EVAL_MAX_NEW_TOKENS = 32
 
 # Dataset configurations
 DATASETS = {
     "bbh": {
-        "tasks": BBH_TASKS,
-        "max_new_tokens": MAX_NEW_TOKENS["bbh"],
+        "tasks": [
+            "dyck_languages",
+            "causal_judgement",
+            "disambiguation_qa",
+            "formal_fallacies",
+            "hyperbaton",
+            "logical_deduction_five_objects",
+            "reasoning_about_colored_objects",
+        ],
         "task_type": "auto",
     },
     "gsm8k": {
         "tasks": [""],  # Single task
-        "max_new_tokens": MAX_NEW_TOKENS["gsm8k"],
         "task_type": "math",
     },
     "humaneval": {
         "tasks": [""],  # Single task
-        "max_new_tokens": MAX_NEW_TOKENS["humaneval"],
         "task_type": "text",
     },
 }
@@ -84,12 +92,12 @@ def build_run_config(
     method: str,
     dataset: str,
     task: str,
-    max_new_tokens: int,
     seed_prompt: str,
     seed: int = 42,
 ) -> RunConfig:
     """Build a RunConfig for a specific method/dataset/task combination."""
     task_label = f"{dataset}_{task}" if task else dataset
+    eval_max_tokens = EVAL_MAX_NEW_TOKENS.get(task or dataset, _DEFAULT_EVAL_MAX_NEW_TOKENS)
     overrides: Dict[str, Any] = {
         "optimizer": {
             "method": method,
@@ -100,7 +108,7 @@ def build_run_config(
             "task": task,
         },
         "evaluation": {
-            "max_new_tokens": max_new_tokens,
+            "max_new_tokens": eval_max_tokens,
         },
         "seed": seed,
         "output_dir": f"outputs/swift_apex_benchmark/{method}/{task_label}/seed_{seed}",
@@ -160,9 +168,10 @@ def run_experiment(
             for task in ds_tasks:
                 for method in methods:
                     task_label = f"{dataset}/{task}" if task else dataset
+                    eval_tok = EVAL_MAX_NEW_TOKENS.get(task or dataset, _DEFAULT_EVAL_MAX_NEW_TOKENS)
                     logger.info(
                         f"  {method} on {task_label} "
-                        f"(max_tokens={ds_config['max_new_tokens']}, seeds={seeds})"
+                        f"(eval_max_tokens={eval_tok}, seeds={seeds})"
                     )
         return
 
@@ -196,7 +205,6 @@ def run_experiment(
                             method=method,
                             dataset=dataset,
                             task=task,
-                            max_new_tokens=ds_config["max_new_tokens"],
                             seed_prompt=seed_prompt,
                             seed=seed,
                         )

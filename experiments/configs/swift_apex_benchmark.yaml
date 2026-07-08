@@ -19,7 +19,7 @@ llm:
 
 # --- Evaluation Configuration ---
 evaluation:
-  sample_size: 33          # Samples per optimization eval step
+  sample_size: 44          # Samples per optimization eval step
   full_eval_size: 115      # Final test evaluation samples
   temperature: 0.0         # Greedy for evaluation
   max_new_tokens: 32       # Short direct answers; model is instructed to skip CoT
@@ -61,7 +61,7 @@ seeds: [42, 123, 7]
 #
 # Datasets & Tasks:
 #
-# --- BBH (max_new_tokens: 1024 for CoT reasoning) ---
+# --- BBH (max_new_tokens: 64 — dyck needs ~20-40 tokens; other tasks need <5) ---
 # Seed prompts fetched from: github.com/beeevita/EvoPrompt/main/BBH/lib_prompt/
 #
 #   - bbh/dyck_languages
@@ -72,7 +72,7 @@ seeds: [42, 123, 7]
 #   - bbh/logical_deduction_five_objects
 #   - bbh/reasoning_about_colored_objects
 #
-# --- GSM8K (max_new_tokens: 512 for math CoT) ---
+# --- GSM8K (max_new_tokens: 32, direct answers only) ---
 # Seed prompt from: github.com/FranxYao/chain-of-thought-hub/.../prompt_simple_4_cases_ao.txt
 #
 #   - gsm8k (single task)

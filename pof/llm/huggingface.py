@@ -130,7 +130,7 @@ class HuggingFaceLLM(BaseLLM):
         input_tokens = len(self._tokenizer.encode(input_text))
         output_tokens = len(self._tokenizer.encode(output))
         tok_per_sec = output_tokens / elapsed if elapsed > 0 else 0
-        logger.info(f"[LLM] {elapsed:.1f}s | {output_tokens}tok out | {tok_per_sec:.0f} tok/s")
+        logger.debug(f"[LLM] {elapsed:.1f}s | {output_tokens}tok out | {tok_per_sec:.0f} tok/s")
         self._track_call(input_tokens, output_tokens, elapsed)
 
         return self._clean_output(output)
