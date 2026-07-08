@@ -54,8 +54,8 @@ BBH_TASKS = [
 
 # Max new tokens per dataset type (CoT needs more tokens)
 MAX_NEW_TOKENS = {
-    "bbh": 1024,       # CoT reasoning can be verbose (e.g., dyck_languages step-by-step)
-    "gsm8k": 512,      # Math CoT: step-by-step then final answer
+    "bbh": 32,
+    "gsm8k": 32,
     "humaneval": 1024,  # Code generation needs space
 }
 
