@@ -202,6 +202,7 @@ def run_experiment(
                     logger.info(f"RUN: {method} on {task_label} [seed={seed}]")
                     logger.info(f"{'='*60}")
 
+                    orchestrator = None
                     try:
                         config = build_run_config(
                             base_config_path=config_path,
@@ -244,6 +245,9 @@ def run_experiment(
                             "error": str(e),
                         }
                         failed_runs += 1
+                    finally:
+                        if orchestrator is not None:
+                            orchestrator.cleanup()
 
     # Save results summary
     output_dir = Path("outputs/swift_apex_benchmark")

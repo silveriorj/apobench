@@ -198,6 +198,23 @@ class RunOrchestrator:
             )
         return self._dataset
 
+    def cleanup(self) -> None:
+        """Release GPU memory after a run."""
+        if self._llm is not None:
+            try:
+                self._llm.cleanup()
+            except Exception:
+                pass
+            self._llm = None
+        try:
+            import gc
+            import torch
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
     def _get_evaluator(self, llm: BaseLLM, dataset: TaskDataset) -> Evaluator:
         """Create evaluator instance."""
         score_fn = create_score_function(dataset.task_type)
