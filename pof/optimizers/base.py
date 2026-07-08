@@ -26,6 +26,25 @@ from pof.core.exceptions import BudgetExceeded
 
 logger = logging.getLogger(__name__)
 
+# System prompts injected per operator category so the model knows its role
+# and keeps output format tight.
+
+_GENERATE_SYSTEM_PROMPT = (
+    "You are an expert prompt engineer. "
+    "Output only the instruction text requested — no preamble, no labels, no commentary."
+)
+
+_CRITIQUE_SYSTEM_PROMPT = (
+    "You are an expert prompt engineer specializing in failure analysis. "
+    "Diagnose why the instruction fails on the given examples. Be concise and specific."
+)
+
+_IMPROVE_SYSTEM_PROMPT = (
+    "You are an expert prompt engineer. "
+    "Given a failure analysis, rewrite the instruction to fix the identified issues. "
+    "Output only the improved instruction text — no preamble, no labels."
+)
+
 
 class BaseOptimizer(ABC):
     """Abstract base for all prompt optimizers.
@@ -252,6 +271,7 @@ class BaseOptimizer(ABC):
         instruction: str,
         temperature: float = 0.7,
         max_new_tokens: int = 512,
+        system_prompt: Optional[str] = None,
     ) -> str:
         """Generate text using the LLM."""
         config = GenerationConfig(
@@ -259,7 +279,7 @@ class BaseOptimizer(ABC):
             max_new_tokens=max_new_tokens,
             do_sample=temperature > 0,
         )
-        return self.llm.generate(instruction, config)
+        return self.llm.generate(instruction, config, system_prompt=system_prompt)
 
     def _get_config_dict(self) -> Dict[str, Any]:
         """Get optimizer configuration as dict."""
@@ -297,7 +317,7 @@ class BaseOptimizer(ABC):
 
         results = []
         for _ in range(n):
-            result = self._generate_prompt(meta_prompt, temperature=0.8)
+            result = self._generate_prompt(meta_prompt, temperature=0.8, system_prompt=_GENERATE_SYSTEM_PROMPT)
             if result.strip():
                 results.append(result.strip())
         return results
@@ -313,7 +333,7 @@ class BaseOptimizer(ABC):
 
         results = []
         for _ in range(n):
-            result = self._generate_prompt(meta_prompt, temperature=0.9)
+            result = self._generate_prompt(meta_prompt, temperature=0.9, system_prompt=_GENERATE_SYSTEM_PROMPT)
             if result.strip():
                 results.append(result.strip())
         return results
@@ -327,7 +347,7 @@ class BaseOptimizer(ABC):
             f"Instruction B:\n{prompt_b}\n\n"
             "Combined instruction:"
         )
-        return self._generate_prompt(meta_prompt, temperature=0.7)
+        return self._generate_prompt(meta_prompt, temperature=0.7, system_prompt=_GENERATE_SYSTEM_PROMPT)
 
     def _feedback_improve(
         self, prompt: str, failures: List[Dict[str, Any]]
@@ -348,7 +368,7 @@ class BaseOptimizer(ABC):
             f"Failures:\n{failure_text}\n\n"
             "Improved instruction:"
         )
-        return self._generate_prompt(meta_prompt, temperature=0.7)
+        return self._generate_prompt(meta_prompt, temperature=0.7, system_prompt=_IMPROVE_SYSTEM_PROMPT)
 
     def _eda_generate(self, prompts: List[str]) -> str:
         """EDA operator: generate from distribution of existing prompts."""
@@ -360,4 +380,4 @@ class BaseOptimizer(ABC):
             f"Existing instructions:\n{prompts_text}\n\n"
             "New instruction:"
         )
-        return self._generate_prompt(meta_prompt, temperature=0.8)
+        return self._generate_prompt(meta_prompt, temperature=0.8, system_prompt=_GENERATE_SYSTEM_PROMPT)

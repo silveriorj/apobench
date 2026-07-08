@@ -47,7 +47,7 @@ SEEDS = [42, 123, 7]
 # single-word or letter answers (Yes/No, A/B/C, color name).
 EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     # BBH
-    "dyck_languages": 64,
+    "dyck_languages": 16,
     "causal_judgement": 8,
     "disambiguation_qa": 8,
     "formal_fallacies": 8,

@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from pof.core.types import GenerationConfig, PromptRecord
 from pof.optimizers import register_optimizer
-from pof.optimizers.base import BaseOptimizer
+from pof.optimizers.base import BaseOptimizer, _GENERATE_SYSTEM_PROMPT, _IMPROVE_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +215,7 @@ class SWIFTOptimizer(BaseOptimizer):
             "Step 2: Write an improved instruction that addresses these issues.\n\n"
             "Improved instruction:"
         )
-        result = self._generate_prompt(meta_prompt, temperature=0.7)
+        result = self._generate_prompt(meta_prompt, temperature=0.7, system_prompt=_IMPROVE_SYSTEM_PROMPT)
         return result.strip() if result.strip() else None
 
     def _local_edit(self, prompt: str) -> Optional[str]:
@@ -227,7 +227,7 @@ class SWIFTOptimizer(BaseOptimizer):
             f"Instruction:\n{prompt}\n\n"
             "Slightly improved instruction:"
         )
-        result = self._generate_prompt(meta_prompt, temperature=0.5)
+        result = self._generate_prompt(meta_prompt, temperature=0.5, system_prompt=_GENERATE_SYSTEM_PROMPT)
         return result.strip() if result.strip() else None
 
     def _build_trajectory_context(self) -> str:
@@ -245,5 +245,5 @@ class SWIFTOptimizer(BaseOptimizer):
             f"{context}\n\n"
             "New higher-scoring instruction:"
         )
-        result = self._generate_prompt(meta_prompt, temperature=0.8)
+        result = self._generate_prompt(meta_prompt, temperature=0.8, system_prompt=_GENERATE_SYSTEM_PROMPT)
         return result.strip() if result.strip() else None

@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from pof.core.types import PromptRecord
 from pof.optimizers import register_optimizer
-from pof.optimizers.base import BaseOptimizer
+from pof.optimizers.base import BaseOptimizer, _GENERATE_SYSTEM_PROMPT, _IMPROVE_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +184,7 @@ class APEXOptimizer(BaseOptimizer):
             f"Original instruction:\n{best.text}\n\n"
             f"Improved instruction:"
         )
-        result = self._generate_prompt(meta_prompt, temperature=0.7)
+        result = self._generate_prompt(meta_prompt, temperature=0.7, system_prompt=_IMPROVE_SYSTEM_PROMPT)
         return [result] if result.strip() else []
 
     def _op_failure_guided(self) -> List[str]:
@@ -229,7 +229,7 @@ class APEXOptimizer(BaseOptimizer):
             f"{context}\n\n"
             "New higher-scoring instruction:"
         )
-        result = self._generate_prompt(meta_prompt, temperature=0.8)
+        result = self._generate_prompt(meta_prompt, temperature=0.8, system_prompt=_GENERATE_SYSTEM_PROMPT)
         return [result] if result.strip() else []
 
     def _op_semantic_variation(self) -> List[str]:
@@ -253,5 +253,5 @@ class APEXOptimizer(BaseOptimizer):
             f"Examples:\n{examples_text}\n\n"
             f"Instruction:"
         )
-        result = self._generate_prompt(meta_prompt, temperature=0.8)
+        result = self._generate_prompt(meta_prompt, temperature=0.8, system_prompt=_GENERATE_SYSTEM_PROMPT)
         return result.strip() if result.strip() else None

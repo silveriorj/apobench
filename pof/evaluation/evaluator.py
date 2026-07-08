@@ -113,6 +113,13 @@ class Evaluator:
         accuracy = num_correct / total if total > 0 else 0.0
         logger.info(f"[Eval] score={accuracy:.3f} ({num_correct}/{total} correct)")
 
+        if logger.isEnabledFor(logging.DEBUG):
+            for d in per_sample_details:
+                mark = "✓" if d["correct"] else "✗"
+                logger.debug(
+                    f"  [{mark}] target={d['target']!r} pred={d['prediction']!r}"
+                )
+
         return EvalResult(
             score=accuracy,
             num_correct=num_correct,
