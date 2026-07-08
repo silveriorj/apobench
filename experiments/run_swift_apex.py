@@ -66,13 +66,14 @@ _DEFAULT_EVAL_MAX_NEW_TOKENS = 32
 DATASETS = {
     "bbh": {
         "tasks": [
-            "dyck_languages",
             "causal_judgement",
             "disambiguation_qa",
             "formal_fallacies",
             "hyperbaton",
             "logical_deduction_five_objects",
+            "penguins_in_a_table",
             "reasoning_about_colored_objects",
+            "web_of_lies",
         ],
         "task_type": "auto",
     },
