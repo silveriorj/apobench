@@ -52,10 +52,12 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     "disambiguation_qa": 8,
     "formal_fallacies": 8,
     "hyperbaton": 8,
-    "logical_deduction_five_objects": 16,
-    "reasoning_about_colored_objects": 16,
+    "logical_deduction_five_objects": 8,
+    "penguins_in_a_table": 8,
+    "reasoning_about_colored_objects": 8,
+    "web_of_lies": 8,
     # Other datasets
-    "gsm8k": 32,       # just the numeric answer
+    "gsm8k": 8,       # just the numeric answer
     "humaneval": 1024,  # full function body
 }
 
