@@ -249,11 +249,13 @@ def _extract_cot_answer(text: str) -> Optional[str]:
 
 
 def _normalize_text(text: str) -> str:
-    """Normalize text for comparison."""
+    """Normalize text for comparison: lowercase and collapse whitespace only.
+
+    Punctuation is NOT stripped — bracket/symbol sequences (e.g. dyck_languages)
+    would all collapse to "" if we removed non-word characters.
+    """
     if not text:
         return ""
-    # Lowercase, strip, collapse whitespace, remove punctuation
     text = text.strip().lower()
-    text = re.sub(r"[^\w\s]", "", text)
     text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    return text

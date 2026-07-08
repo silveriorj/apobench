@@ -85,7 +85,7 @@ class HuggingFaceLLM(BaseLLM):
 
             self._model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
-                torch_dtype=self._dtype,
+                dtype=self._dtype,
                 device_map=self._device if self._device == "auto" else None,
                 trust_remote_code=True,
             )
