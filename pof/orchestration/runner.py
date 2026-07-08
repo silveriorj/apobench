@@ -102,6 +102,8 @@ class RunOrchestrator:
         else:
             logger.warning("[Test eval] skipped — no test samples or no best prompt")
 
+        optimizer.tracker.test_score = result.test_score
+
         # Save audit trail
         optimizer.tracker.save_json()
         optimizer.tracker.save_csv()

@@ -51,6 +51,7 @@ class AuditTracker:
         self.started_at: str = ""
         self.ended_at: str = ""
         self.notes: List[str] = []
+        self.test_score: float = 0.0
 
     def start(self) -> None:
         """Mark the start of the optimization run."""
@@ -98,6 +99,7 @@ class AuditTracker:
             "total_generations": len(self.history.generations),
             "total_candidates": len(self.history.records),
             "best_score": best.score if best else 0.0,
+            "test_score": self.test_score,
             "best_prompt": best.text if best and best.is_complete else "[stripped]",
             "llm_usage": self.usage.to_dict(),
             "config": self.config,
@@ -159,12 +161,26 @@ class AuditTracker:
                     "best_record_id",
                     "operator_counts",
                     "timestamp",
+                    "test_score",
                 ],
             )
             writer.writeheader()
             for gen in self.history.generations:
                 row = gen.to_dict()
                 row["operator_counts"] = json.dumps(row["operator_counts"])
+                row["test_score"] = ""
                 writer.writerow(row)
+            # Final row with the test score
+            if self.test_score:
+                writer.writerow({
+                    "generation": "final",
+                    "best_score": self.history.get_best_record().score if self.history.get_best_record() else "",
+                    "mean_score": "",
+                    "population_size": "",
+                    "best_record_id": "",
+                    "operator_counts": "",
+                    "timestamp": self.ended_at,
+                    "test_score": self.test_score,
+                })
 
         return path
