@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 # Injected on every evaluation call so the model skips CoT and gives a direct
 # answer.  This lets max_new_tokens stay short (64) while scoring correctly.
 _EVAL_SYSTEM_PROMPT = (
-    "You output only the final answer. No explanation, no reasoning, no labels. "
-    "Be minimal and exact."
+    'Output your answer as JSON with a single field, e.g. {"answer": "C"} or {"answer": "Yes"}. '
+    "Use only the answer letter or word — no reasoning, no explanation, no preamble."
 )
 
 

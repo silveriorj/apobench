@@ -3,7 +3,7 @@
 # =============================================================================
 # Model: Qwen/Qwen3-4B-Instruct-2507
 # Eval samples: 44 per optimization step
-# Final test samples: 115 per dataset
+# Final test samples: ~112-150 per task (60% of 187-250 BBH examples)
 # CoT: Handled in output (max_new_tokens adjusted per task type)
 # =============================================================================
 
@@ -19,8 +19,8 @@ llm:
 
 # --- Evaluation Configuration ---
 evaluation:
-  sample_size: 44          # Samples per optimization eval step
-  full_eval_size: 115      # Final test evaluation samples
+  sample_size: 33          # Samples per optimization eval step
+  full_eval_size: 150      # Final test evaluation samples (capped by test split size ~112-150)
   temperature: 0.0         # Greedy for evaluation
   max_new_tokens: 32       # Short direct answers; model is instructed to skip CoT
   batch_size: 4            # GPU batch size: 8 fits 4B model on 12GB+ VRAM

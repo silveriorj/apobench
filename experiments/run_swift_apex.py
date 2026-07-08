@@ -48,16 +48,16 @@ SEEDS = [42, 123, 7]
 EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     # BBH
     "dyck_languages": 16,
-    "causal_judgement": 8,
-    "disambiguation_qa": 8,
-    "formal_fallacies": 8,
-    "hyperbaton": 8,
-    "logical_deduction_five_objects": 8,
-    "penguins_in_a_table": 8,
-    "reasoning_about_colored_objects": 8,
-    "web_of_lies": 8,
+    "causal_judgement": 16,
+    "disambiguation_qa": 16,
+    "formal_fallacies": 16,
+    "hyperbaton": 16,
+    "logical_deduction_five_objects": 64,
+    "penguins_in_a_table": 32,
+    "reasoning_about_colored_objects": 64,
+    "web_of_lies": 16,
     # Other datasets
-    "gsm8k": 8,       # just the numeric answer
+    "gsm8k": 16,       # just the numeric answer
     "humaneval": 1024,  # full function body
 }
 

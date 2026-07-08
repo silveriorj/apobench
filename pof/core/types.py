@@ -119,8 +119,8 @@ class GenerationConfig:
 
     max_new_tokens: int = 512
     temperature: float = 0.7
-    top_p: float = 0.95
-    top_k: int = 50
+    top_p: float = 0.8    # Qwen3 instruct recommendation
+    top_k: int = 20       # Qwen3 instruct recommendation
     do_sample: bool = True
     num_return_sequences: int = 1
     stop_sequences: List[str] = field(default_factory=list)

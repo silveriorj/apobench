@@ -202,17 +202,17 @@ def _load_bbh(task: str, num_samples: int, seed: int) -> TaskDataset:
         if sample["input"] and sample["target"]:
             all_samples.append(sample)
 
-    # Shuffle and split
+    # Shuffle with all available samples (no cap)
     rng = random.Random(seed)
     rng.shuffle(all_samples)
 
     # Limit total samples
     all_samples = all_samples[:num_samples]
 
-    # Split: 20% train (few-shot), 40% dev, 40% test
-    n_train = max(3, len(all_samples) // 5)
+    # Split: 10% train (few-shot), 30% dev, 60% test
+    n_train = max(3, len(all_samples) // 10)
     n_remaining = len(all_samples) - n_train
-    n_dev = n_remaining // 2
+    n_dev = max(1, round(n_remaining * 0.333))
     n_test = n_remaining - n_dev
 
     train = all_samples[:n_train]

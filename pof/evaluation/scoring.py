@@ -146,22 +146,32 @@ def _extract_number(text: str) -> Optional[float]:
 
 
 def _extract_choice(text: str) -> Optional[str]:
-    """Extract a multiple choice letter (A-E) from text."""
+    """Extract a multiple choice letter from text.
+
+    BBH tasks like reasoning_about_colored_objects have >5 options (colors go
+    up to letter R or beyond), so we match the full A-Z range rather than A-E.
+    JSON format {"answer": "C"} is checked first per Qwen's output recommendation.
+    """
     if not text:
         return None
 
     text = text.strip()
 
+    # Highest priority: JSON format  {"answer": "C"}  or  "answer": "C"
+    json_match = re.search(r'"answer"\s*:\s*"([A-Za-z])"', text)
+    if json_match:
+        return json_match.group(1).upper()
+
     # Direct single letter
-    if len(text) == 1 and text.upper() in "ABCDE":
+    if len(text) == 1 and text.upper().isalpha():
         return text.upper()
 
-    # Patterns: "(A)", "A)", "A.", "answer: A", "The answer is B"
+    # Patterns (broadened to A-Z): "(A)", "A)", "A.", "answer: A", "The answer is B"
     patterns = [
-        r"(?:answer|choice)\s*(?:is|:)\s*\(?([A-Ea-e])\)?",
-        r"^\s*\(?([A-Ea-e])\)?\s*[.\s]",
-        r"\(([A-Ea-e])\)",
-        r"([A-Ea-e])\s*$",
+        r"(?:answer|choice)\s*(?:is|:)\s*\(?([A-Za-z])\)?",
+        r"^\s*\(?([A-Za-z])\)?\s*[.\s]",
+        r"\(([A-Za-z])\)",
+        r"([A-Za-z])\s*$",
     ]
 
     for pattern in patterns:
@@ -177,6 +187,15 @@ def _extract_boolean(text: str) -> Optional[bool]:
     if not text:
         return None
 
+    # Highest priority: JSON format  {"answer": "Yes"}
+    json_match = re.search(r'"answer"\s*:\s*"(\w+)"', text, re.IGNORECASE)
+    if json_match:
+        val = json_match.group(1).lower()
+        if val in ("yes", "true", "valid", "correct"):
+            return True
+        if val in ("no", "false", "invalid", "incorrect"):
+            return False
+
     text = text.strip().lower()
 
     # Direct matches
@@ -190,13 +209,13 @@ def _extract_boolean(text: str) -> Optional[bool]:
 
     # Pattern: "the answer is yes/no"
     match = re.search(
-        r"(?:answer|result)\s*(?:is|:)\s*(yes|no|true|false)",
+        r"(?:answer|result)\s*(?:is|:)\s*(yes|no|true|false|valid|invalid)",
         text,
         re.IGNORECASE,
     )
     if match:
         val = match.group(1).lower()
-        return val in ("yes", "true")
+        return val in ("yes", "true", "valid")
 
     return None
 
