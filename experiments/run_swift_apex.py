@@ -131,6 +131,14 @@ def build_run_config(
     return load_config(base_config_path, overrides=overrides)
 
 
+def _next_run_dir(base: str = "outputs") -> str:
+    """First non-existing outputs/run_N directory (fresh default per launch)."""
+    i = 1
+    while Path(f"{base}/run_{i}").exists():
+        i += 1
+    return f"{base}/run_{i}"
+
+
 def _read_yaml_meta(config_path: str) -> Dict[str, Any]:
     """Read raw YAML for runner-level keys not in RunConfig (models, output_dir)."""
     import yaml
@@ -148,6 +156,7 @@ def run_experiment(
     seeds: Optional[List[int]] = None,
     models: Optional[List[str]] = None,
     config_path: str = "experiments/configs/swift_apex_benchmark.yaml",
+    output_dir: Optional[str] = None,
     dry_run: bool = False,
 ):
     """Run the full experiment matrix with multiple seeds (and optionally models).
@@ -160,6 +169,7 @@ def run_experiment(
         models: HF model names to loop over. Defaults to the `models:` list in
             the YAML if present; otherwise the single llm.model_name is used.
         config_path: Path to base config YAML.
+        output_dir: Root output directory. Overrides the YAML's output_dir.
         dry_run: If True, only print what would be run.
     """
     methods = methods or METHODS
@@ -169,7 +179,9 @@ def run_experiment(
     yaml_meta = _read_yaml_meta(config_path)
     if models is None:
         models = yaml_meta.get("models") or [None]
-    output_root = yaml_meta.get("output_dir", "outputs/swift_apex_benchmark")
+    # Priority: CLI flag → YAML output_dir → fresh outputs/run_N
+    output_root = output_dir or yaml_meta.get("output_dir") or _next_run_dir()
+    logger.info(f"Output root: {output_root}")
 
     results: Dict[str, Any] = {}
     total_runs = 0
@@ -375,6 +387,10 @@ def main():
              "or the single llm.model_name)",
     )
     parser.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Root output directory (overrides the YAML's output_dir)",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Print what would be run without executing",
     )
@@ -388,6 +404,7 @@ def main():
         seeds=args.seeds,
         models=args.models,
         config_path=args.config,
+        output_dir=args.output_dir,
         dry_run=args.dry_run,
     )
 
