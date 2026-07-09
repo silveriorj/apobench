@@ -33,6 +33,8 @@ def create_score_function(task_type: str = "auto") -> ScoreFunction:
         return _score_boolean
     elif task_type == "text":
         return _score_text
+    elif task_type == "code":
+        return _score_code
     else:
         return _score_auto
 
@@ -99,6 +101,71 @@ def _score_math(prediction: str, target: str) -> int:
     if pred_num == target_num:
         return 1
     return 0
+
+
+def _score_code(prediction: str, target: str) -> int:
+    """Score code by executing it against unit tests (HumanEval pass@1).
+
+    The target is a JSON blob with 'prompt' (signature + docstring), 'test'
+    (the check function), and 'entry_point'. The candidate program is
+    assembled and run in a subprocess with a timeout; score 1 iff it exits 0.
+    """
+    import json as _json
+    import subprocess
+    import sys as _sys
+
+    try:
+        meta = _json.loads(target)
+        test_code = meta["test"]
+        entry_point = meta["entry_point"]
+        problem_prompt = meta.get("prompt", "")
+    except (ValueError, KeyError, TypeError):
+        # Not a HumanEval-style target — plain text comparison
+        return _score_text(prediction, target)
+
+    completion = _extract_code(prediction)
+    if not completion.strip():
+        return 0
+
+    # Models either return the function body (HumanEval convention) or a
+    # full function definition — handle both.
+    if f"def {entry_point}" in completion:
+        program = completion
+        # Keep imports/helpers from the original prompt header
+        header = problem_prompt.split(f"def {entry_point}")[0]
+        program = header + "\n" + completion
+    else:
+        body = completion if completion.startswith((" ", "\t")) else _indent(completion)
+        program = problem_prompt + body
+
+    program = f"{program}\n\n{test_code}\n\ncheck({entry_point})\n"
+
+    try:
+        proc = subprocess.run(
+            [_sys.executable, "-c", program],
+            capture_output=True,
+            timeout=15,
+        )
+        return 1 if proc.returncode == 0 else 0
+    except (subprocess.TimeoutExpired, OSError):
+        return 0
+
+
+def _extract_code(text: str) -> str:
+    """Extract code from model output, stripping markdown fences and chatter."""
+    if not text:
+        return ""
+    # Prefer fenced code blocks if present
+    fence = re.search(r"```(?:python)?\s*\n(.*?)```", text, re.DOTALL)
+    if fence:
+        return fence.group(1)
+    return text
+
+
+def _indent(code: str, prefix: str = "    ") -> str:
+    """Indent every line (turn a flush-left body into a function body)."""
+    return "\n".join(prefix + line if line.strip() else line
+                     for line in code.split("\n"))
 
 
 def _normalize_math(text: str) -> str:

@@ -152,6 +152,8 @@ def load_dataset_by_name(
         return _load_bbh(task, num_samples, seed)
     elif name.lower() in ("livebench_math", "livebench/math"):
         return _load_livebench_math(task, num_samples, seed)
+    elif name.lower() == "humaneval":
+        return _load_humaneval(num_samples, seed)
     elif name.endswith(".json") or Path(name).exists():
         return _load_json(name, num_samples, seed)
     else:
@@ -296,6 +298,68 @@ def _load_livebench_math(task: str, num_samples: int, seed: int) -> TaskDataset:
         test_samples=test,
         task_type="math",
         metadata={"source": "livebench/math", "task": task},
+    )
+
+
+def _load_humaneval(num_samples: int, seed: int) -> TaskDataset:
+    """Load HumanEval (HF: openai/openai_humaneval) — code generation, pass@1.
+
+    The sample `input` is the function signature + docstring; the `target`
+    is a JSON blob carrying the unit tests and entry point, consumed by the
+    'code' score function which executes the completion against the tests.
+    """
+    try:
+        from datasets import load_dataset as hf_load_dataset
+    except ImportError:
+        raise DatasetError("'datasets' package required. Run: pip install datasets")
+
+    try:
+        dataset = hf_load_dataset("openai/openai_humaneval", split="test")
+    except Exception as e:
+        raise DatasetError(f"Failed to load openai/openai_humaneval: {e}") from e
+
+    all_samples = []
+    for item in dataset:
+        all_samples.append({
+            "input": item["prompt"],
+            "target": json.dumps({
+                "prompt": item["prompt"],
+                "test": item["test"],
+                "entry_point": item["entry_point"],
+            }),
+            "_canonical": item["canonical_solution"],
+        })
+
+    rng = random.Random(seed)
+    rng.shuffle(all_samples)
+
+    # 164 problems total → small-task split: train=3, dev=46, test=115
+    if len(all_samples) >= 8 + 50 + 115:
+        n_train = 8
+        n_test = min(115, max(1, len(all_samples) - n_train - 50))
+    else:
+        n_train = 3
+        n_test = min(115, max(1, len(all_samples) - n_train - 33))
+
+    test = all_samples[:n_test]
+    train = all_samples[n_test: n_test + n_train]
+    dev = all_samples[n_test + n_train:]
+
+    # Train samples feed few-shot/Lamarckian operators — show the canonical
+    # solution as the target, not the JSON test blob used for scoring.
+    train = [
+        {"input": s["input"], "target": s["_canonical"]} for s in train
+    ]
+    test = [{"input": s["input"], "target": s["target"]} for s in test]
+    dev = [{"input": s["input"], "target": s["target"]} for s in dev]
+
+    return TaskDataset(
+        name="humaneval",
+        train_samples=train,
+        dev_samples=dev,
+        test_samples=test,
+        task_type="code",
+        metadata={"source": "openai/openai_humaneval"},
     )
 
 

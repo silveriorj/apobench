@@ -29,6 +29,12 @@ _MATH_EVAL_SYSTEM_PROMPT = (
     "Please reason step by step, and put your final answer within \\boxed{}."
 )
 
+# Code tasks (HumanEval): output executable code only — the scorer runs it.
+_CODE_EVAL_SYSTEM_PROMPT = (
+    "You are a Python coding assistant. Output only the code completion — "
+    "no explanations, no usage examples, no markdown commentary."
+)
+
 
 class Evaluator:
     """Evaluate prompts against task samples with optional racing.
@@ -52,9 +58,10 @@ class Evaluator:
         self.llm = llm
         self.score_fn = score_fn or create_score_function(task_type)
         self.task_type = task_type
-        self.system_prompt = (
-            _MATH_EVAL_SYSTEM_PROMPT if task_type == "math" else _EVAL_SYSTEM_PROMPT
-        )
+        self.system_prompt = {
+            "math": _MATH_EVAL_SYSTEM_PROMPT,
+            "code": _CODE_EVAL_SYSTEM_PROMPT,
+        }.get(task_type, _EVAL_SYSTEM_PROMPT)
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.batch_size = batch_size
