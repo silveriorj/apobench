@@ -150,10 +150,14 @@ def load_dataset_by_name(
     """
     if name.lower() == "bbh":
         return _load_bbh(task, num_samples, seed)
+    elif name.lower() in ("livebench_math", "livebench/math"):
+        return _load_livebench_math(task, num_samples, seed)
     elif name.endswith(".json") or Path(name).exists():
         return _load_json(name, num_samples, seed)
     else:
-        raise DatasetError(f"Unknown dataset: {name}. Use 'bbh' or a JSON file path.")
+        raise DatasetError(
+            f"Unknown dataset: {name}. Use 'bbh', 'livebench_math', or a JSON file path."
+        )
 
 
 def _load_bbh(task: str, num_samples: int, seed: int) -> TaskDataset:
@@ -233,6 +237,65 @@ def _load_bbh(task: str, num_samples: int, seed: int) -> TaskDataset:
         test_samples=test,
         task_type=task_type,
         metadata={"source": "bigbenchhard", "task": task},
+    )
+
+
+def _load_livebench_math(task: str, num_samples: int, seed: int) -> TaskDataset:
+    """Load LiveBench math (HF: livebench/math) — zero-shot competition math.
+
+    Subtasks: AMPS_Hard (numeric/expression answers), math_comp (multiple
+    choice), olympiad (fill-in). Pass `task` to filter to one subtask, or
+    leave empty for all. Targets come from `ground_truth`; scoring uses
+    final_em-style exact match on the extracted final answer (\\boxed{} aware).
+    """
+    try:
+        from datasets import load_dataset as hf_load_dataset
+    except ImportError:
+        raise DatasetError("'datasets' package required. Run: pip install datasets")
+
+    try:
+        dataset = hf_load_dataset("livebench/math", split="test")
+    except Exception as e:
+        raise DatasetError(f"Failed to load livebench/math: {e}") from e
+
+    all_samples = []
+    for item in dataset:
+        if task and item.get("task", "") != task:
+            continue
+        turns = item.get("turns") or []
+        question = turns[0] if turns else item.get("question", "")
+        target = item.get("ground_truth", "")
+        if question and target:
+            all_samples.append({"input": question, "target": str(target)})
+
+    if not all_samples:
+        raise DatasetError(
+            f"livebench/math returned no samples (task filter: {task!r})"
+        )
+
+    rng = random.Random(seed)
+    rng.shuffle(all_samples)
+
+    # Same fixed-size splits as BBH (small-task fallback included)
+    if len(all_samples) >= 8 + 50 + 115:
+        n_train = 8
+        n_test = min(115, max(1, len(all_samples) - n_train - 50))
+    else:
+        n_train = 3
+        n_test = min(115, max(1, len(all_samples) - n_train - 33))
+
+    test = all_samples[:n_test]
+    train = all_samples[n_test: n_test + n_train]
+    dev = all_samples[n_test + n_train:]
+
+    name = f"livebench_math_{task}" if task else "livebench_math"
+    return TaskDataset(
+        name=name,
+        train_samples=train,
+        dev_samples=dev,
+        test_samples=test,
+        task_type="math",
+        metadata={"source": "livebench/math", "task": task},
     )
 
 

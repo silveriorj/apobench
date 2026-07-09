@@ -199,34 +199,56 @@ class HuggingFaceLLM(BaseLLM):
     def _apply_chat_template(self, messages: List[Dict[str, str]]) -> str:
         """Apply tokenizer's chat template.
 
-        Passes enable_thinking so Qwen3 respects thinking_mode=False.
-        Falls back gracefully for tokenizers that don't support the kwarg.
+        Passes enable_thinking so Qwen3 respects thinking_mode=False; retries
+        without the kwarg for other models. Models whose templates reject the
+        system role (e.g. Gemma-2 raises "System role not supported") get the
+        system prompt folded into the first user message instead.
         """
-        try:
-            return self._tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=self.thinking_mode,
-            )
-        except TypeError:
-            # Tokenizer doesn't support enable_thinking (non-Qwen3 model)
+        for msgs in (messages, self._fold_system_into_user(messages)):
             try:
                 return self._tokenizer.apply_chat_template(
-                    messages,
+                    msgs,
                     tokenize=False,
                     add_generation_prompt=True,
+                    enable_thinking=self.thinking_mode,
                 )
+            except TypeError:
+                # Tokenizer doesn't support enable_thinking (non-Qwen3 model)
+                try:
+                    return self._tokenizer.apply_chat_template(
+                        msgs,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
+                except Exception:
+                    continue
             except Exception:
-                pass
-        except Exception:
-            pass
-        # Plain-text fallback
+                continue
+        # Plain-text fallback (no usable chat template at all)
         parts = []
         for msg in messages:
             parts.append(f"<|{msg['role']}|>\n{msg['content']}")
         parts.append("<|assistant|>\n")
         return "\n".join(parts)
+
+    @staticmethod
+    def _fold_system_into_user(
+        messages: List[Dict[str, str]]
+    ) -> List[Dict[str, str]]:
+        """Merge a system message into the first user message.
+
+        For chat templates that reject the system role (e.g. Gemma-2).
+        """
+        system = [m for m in messages if m["role"] == "system"]
+        if not system:
+            return messages
+        rest = [dict(m) for m in messages if m["role"] != "system"]
+        instructions = "\n".join(m["content"] for m in system)
+        for m in rest:
+            if m["role"] == "user":
+                m["content"] = f"{instructions}\n\n{m['content']}"
+                break
+        return rest
 
     @torch.inference_mode()
     def _generate_text(self, input_text: str, config: GenerationConfig) -> str:

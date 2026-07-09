@@ -67,7 +67,24 @@ def _score_auto(prediction: str, target: str) -> int:
 
 
 def _score_math(prediction: str, target: str) -> int:
-    """Score mathematical/numeric answers."""
+    """Score mathematical answers (final_em style, \\boxed{} aware).
+
+    The final answer is extracted from \\boxed{...} (last occurrence, per
+    LiveBench/Meta's 0-shot CoT convention) or from a JSON answer field; the
+    extracted answer is compared numerically when both sides parse as numbers,
+    otherwise by normalized exact match (handles expressions, tuples, letters).
+    """
+    pred_final = _extract_boxed(prediction)
+    if pred_final is None:
+        json_match = re.search(r'"answer"\s*:\s*"([^"]*)"', prediction)
+        pred_final = json_match.group(1) if json_match else None
+    target_final = _extract_boxed(target) or target
+
+    # Exact match on the extracted final answer (LaTeX-normalized)
+    if pred_final is not None:
+        if _normalize_math(pred_final) == _normalize_math(target_final):
+            return 1
+
     pred_num = _extract_number(prediction)
     target_num = _extract_number(target)
 
@@ -82,6 +99,34 @@ def _score_math(prediction: str, target: str) -> int:
     if pred_num == target_num:
         return 1
     return 0
+
+
+def _normalize_math(text: str) -> str:
+    """Normalize a LaTeX/math answer for exact-match comparison.
+
+    Removes presentation-only markup (mirroring LiveBench's scorer):
+    dollar signs, \\left/\\right, LaTeX spacing (\\, \\; \\!, escaped
+    spaces), and all whitespace. Case-insensitive.
+    """
+    if not text:
+        return ""
+    text = text.strip().lower()
+    text = text.replace("$", "")
+    text = re.sub(r"\\left|\\right", "", text)
+    text = re.sub(r"\\[,;! ]", "", text)   # LaTeX spacing commands incl. '\ '
+    text = re.sub(r"\s+", "", text)
+    return text
+
+
+def _extract_boxed(text: str) -> Optional[str]:
+    """Extract the content of the LAST \\boxed{...} in the text.
+
+    Handles one level of nested braces (e.g. \\boxed{\\frac{1}{2}}).
+    """
+    if not text:
+        return None
+    matches = re.findall(r"\\boxed\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}", text)
+    return matches[-1].strip() if matches else None
 
 
 def _score_mcq(prediction: str, target: str) -> int:

@@ -57,8 +57,8 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     "reasoning_about_colored_objects": 64,
     "web_of_lies": 16,
     # Other datasets
-    "gsm8k": 16,       # just the numeric answer
-    "humaneval": 1024,  # full function body
+    "livebench_math": 512,  # 0-shot CoT: reasoning + \boxed{} final answer
+    "humaneval": 1024,      # full function body
 }
 
 # Default fallback when task is not listed above
@@ -79,8 +79,8 @@ DATASETS = {
         ],
         "task_type": "auto",
     },
-    "gsm8k": {
-        "tasks": [""],  # Single task
+    "livebench_math": {
+        "tasks": [""],  # All subtasks pooled (AMPS_Hard, math_comp, olympiad)
         "task_type": "math",
     },
     "humaneval": {
@@ -90,6 +90,11 @@ DATASETS = {
 }
 
 
+def _model_slug(model_name: str) -> str:
+    """Filesystem-safe short name for a model, e.g. Qwen/Qwen3-0.6B → qwen3-0.6b."""
+    return model_name.split("/")[-1].lower()
+
+
 def build_run_config(
     base_config_path: str,
     method: str,
@@ -97,10 +102,15 @@ def build_run_config(
     task: str,
     seed_prompt: str,
     seed: int = 42,
+    model_name: Optional[str] = None,
+    output_root: str = "outputs/swift_apex_benchmark",
 ) -> RunConfig:
-    """Build a RunConfig for a specific method/dataset/task combination."""
+    """Build a RunConfig for a specific method/dataset/task/model combination."""
     task_label = f"{dataset}_{task}" if task else dataset
     eval_max_tokens = EVAL_MAX_NEW_TOKENS.get(task or dataset, _DEFAULT_EVAL_MAX_NEW_TOKENS)
+    run_dir = f"{output_root}/{method}/{task_label}/seed_{seed}"
+    if model_name:
+        run_dir = f"{output_root}/{_model_slug(model_name)}/{method}/{task_label}/seed_{seed}"
     overrides: Dict[str, Any] = {
         "optimizer": {
             "method": method,
@@ -114,9 +124,21 @@ def build_run_config(
             "max_new_tokens": eval_max_tokens,
         },
         "seed": seed,
-        "output_dir": f"outputs/swift_apex_benchmark/{method}/{task_label}/seed_{seed}",
+        "output_dir": run_dir,
     }
+    if model_name:
+        overrides["llm"] = {"model_name": model_name}
     return load_config(base_config_path, overrides=overrides)
+
+
+def _read_yaml_meta(config_path: str) -> Dict[str, Any]:
+    """Read raw YAML for runner-level keys not in RunConfig (models, output_dir)."""
+    import yaml
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
 
 
 def run_experiment(
@@ -124,16 +146,19 @@ def run_experiment(
     datasets: Optional[List[str]] = None,
     tasks: Optional[List[str]] = None,
     seeds: Optional[List[int]] = None,
+    models: Optional[List[str]] = None,
     config_path: str = "experiments/configs/swift_apex_benchmark.yaml",
     dry_run: bool = False,
 ):
-    """Run the full experiment matrix with multiple seeds.
+    """Run the full experiment matrix with multiple seeds (and optionally models).
 
     Args:
         methods: Methods to run (default: all).
         datasets: Datasets to run (default: all).
         tasks: Specific tasks to run (default: all per dataset).
         seeds: Random seeds for repetition (default: [42, 123, 7]).
+        models: HF model names to loop over. Defaults to the `models:` list in
+            the YAML if present; otherwise the single llm.model_name is used.
         config_path: Path to base config YAML.
         dry_run: If True, only print what would be run.
     """
@@ -141,22 +166,29 @@ def run_experiment(
     datasets_to_run = datasets or list(DATASETS.keys())
     seeds = seeds or SEEDS
 
+    yaml_meta = _read_yaml_meta(config_path)
+    if models is None:
+        models = yaml_meta.get("models") or [None]
+    output_root = yaml_meta.get("output_dir", "outputs/swift_apex_benchmark")
+
     results: Dict[str, Any] = {}
     total_runs = 0
     completed_runs = 0
     failed_runs = 0
 
-    # Count total runs (methods × tasks × seeds)
-    for dataset in datasets_to_run:
-        ds_config = DATASETS[dataset]
-        ds_tasks = tasks if tasks else ds_config["tasks"]
-        for task in ds_tasks:
-            for method in methods:
-                for seed in seeds:
-                    total_runs += 1
+    # Count total runs (models × tasks × methods × seeds)
+    for model in models:
+        for dataset in datasets_to_run:
+            ds_config = DATASETS[dataset]
+            ds_tasks = tasks if tasks else ds_config["tasks"]
+            for task in ds_tasks:
+                for method in methods:
+                    for seed in seeds:
+                        total_runs += 1
 
     logger.info(f"{'='*70}")
-    logger.info(f"EXPERIMENT: SWIFT & APEX Benchmark (multi-seed)")
+    logger.info(f"EXPERIMENT: APO Benchmark (multi-seed, multi-model)")
+    logger.info(f"Models: {[m or 'from-yaml' for m in models]}")
     logger.info(f"Methods: {methods}")
     logger.info(f"Datasets: {datasets_to_run}")
     logger.info(f"Seeds: {seeds}")
@@ -165,92 +197,101 @@ def run_experiment(
 
     if dry_run:
         logger.info("\n[DRY RUN] Would execute:")
+        for model in models:
+            for dataset in datasets_to_run:
+                ds_config = DATASETS[dataset]
+                ds_tasks = tasks if tasks else ds_config["tasks"]
+                for task in ds_tasks:
+                    for method in methods:
+                        task_label = f"{dataset}/{task}" if task else dataset
+                        eval_tok = EVAL_MAX_NEW_TOKENS.get(task or dataset, _DEFAULT_EVAL_MAX_NEW_TOKENS)
+                        logger.info(
+                            f"  [{model or 'default'}] {method} on {task_label} "
+                            f"(eval_max_tokens={eval_tok}, seeds={seeds})"
+                        )
+        return
+
+    # Execute runs. Models loop is outermost so each model's weights are only
+    # loaded/unloaded once per block of runs (orchestrator reloads per run,
+    # but the HF disk cache stays warm and VRAM never holds two models).
+    for model in models:
+        model_label = _model_slug(model) if model else "default"
         for dataset in datasets_to_run:
             ds_config = DATASETS[dataset]
             ds_tasks = tasks if tasks else ds_config["tasks"]
+
             for task in ds_tasks:
+                # Fetch seed prompt (once per task, shared across seeds)
+                try:
+                    seed_prompt = get_seed_prompt(dataset, task, use_full_prompt=True)
+                    logger.info(f"Loaded seed prompt for {dataset}/{task} ({len(seed_prompt)} chars)")
+                except Exception as e:
+                    logger.error(f"Failed to load seed prompt for {dataset}/{task}: {e}")
+                    seed_prompt = ""
+
                 for method in methods:
                     task_label = f"{dataset}/{task}" if task else dataset
-                    eval_tok = EVAL_MAX_NEW_TOKENS.get(task or dataset, _DEFAULT_EVAL_MAX_NEW_TOKENS)
-                    logger.info(
-                        f"  {method} on {task_label} "
-                        f"(eval_max_tokens={eval_tok}, seeds={seeds})"
-                    )
-        return
 
-    # Execute runs
-    for dataset in datasets_to_run:
-        ds_config = DATASETS[dataset]
-        ds_tasks = tasks if tasks else ds_config["tasks"]
+                    for seed in seeds:
+                        run_key = f"{model_label}_{method}_{task_label}_seed{seed}"
 
-        for task in ds_tasks:
-            # Fetch seed prompt (once per task, shared across seeds)
-            try:
-                seed_prompt = get_seed_prompt(dataset, task, use_full_prompt=True)
-                logger.info(f"Loaded seed prompt for {dataset}/{task} ({len(seed_prompt)} chars)")
-            except Exception as e:
-                logger.error(f"Failed to load seed prompt for {dataset}/{task}: {e}")
-                seed_prompt = ""
+                        logger.info(f"\n{'='*60}")
+                        logger.info(f"RUN: {method} on {task_label} [model={model_label} seed={seed}]")
+                        logger.info(f"{'='*60}")
 
-            for method in methods:
-                task_label = f"{dataset}/{task}" if task else dataset
+                        orchestrator = None
+                        try:
+                            config = build_run_config(
+                                base_config_path=config_path,
+                                method=method,
+                                dataset=dataset,
+                                task=task,
+                                seed_prompt=seed_prompt,
+                                seed=seed,
+                                model_name=model,
+                                output_root=output_root,
+                            )
 
-                for seed in seeds:
-                    run_key = f"{method}_{task_label}_seed{seed}"
+                            from pof.orchestration.runner import RunOrchestrator
+                            orchestrator = RunOrchestrator(config)
+                            result = orchestrator.run()
 
-                    logger.info(f"\n{'='*60}")
-                    logger.info(f"RUN: {method} on {task_label} [seed={seed}]")
-                    logger.info(f"{'='*60}")
+                            results[run_key] = {
+                                "model": model or config.llm.model_name,
+                                "method": method,
+                                "dataset": dataset,
+                                "task": task,
+                                "seed": seed,
+                                "best_score": result.best_score,
+                                "test_score": result.test_score,
+                                "total_time": result.total_time,
+                                "llm_calls": result.llm_usage.total_calls if result.llm_usage else 0,
+                                "total_tokens": result.llm_usage.total_tokens if result.llm_usage else 0,
+                                "best_prompt": result.best_prompt[:200],
+                            }
+                            completed_runs += 1
+                            logger.info(
+                                f"  ✓ dev={result.best_score:.4f} | test={result.test_score:.4f} | "
+                                f"Time: {result.total_time:.1f}s | Seed: {seed}"
+                            )
 
-                    orchestrator = None
-                    try:
-                        config = build_run_config(
-                            base_config_path=config_path,
-                            method=method,
-                            dataset=dataset,
-                            task=task,
-                            seed_prompt=seed_prompt,
-                            seed=seed,
-                        )
-
-                        from pof.orchestration.runner import RunOrchestrator
-                        orchestrator = RunOrchestrator(config)
-                        result = orchestrator.run()
-
-                        results[run_key] = {
-                            "method": method,
-                            "dataset": dataset,
-                            "task": task,
-                            "seed": seed,
-                            "best_score": result.best_score,
-                            "test_score": result.test_score,
-                            "total_time": result.total_time,
-                            "llm_calls": result.llm_usage.total_calls if result.llm_usage else 0,
-                            "total_tokens": result.llm_usage.total_tokens if result.llm_usage else 0,
-                            "best_prompt": result.best_prompt[:200],
-                        }
-                        completed_runs += 1
-                        logger.info(
-                            f"  ✓ dev={result.best_score:.4f} | test={result.test_score:.4f} | "
-                            f"Time: {result.total_time:.1f}s | Seed: {seed}"
-                        )
-
-                    except Exception as e:
-                        logger.error(f"  ✗ FAILED: {e}")
-                        results[run_key] = {
-                            "method": method,
-                            "dataset": dataset,
-                            "task": task,
-                            "seed": seed,
-                            "error": str(e),
-                        }
-                        failed_runs += 1
-                    finally:
-                        if orchestrator is not None:
-                            orchestrator.cleanup()
+                        except Exception as e:
+                            logger.error(f"  ✗ FAILED: {e}")
+                            results[run_key] = {
+                                "model": model,
+                                "method": method,
+                                "dataset": dataset,
+                                "task": task,
+                                "seed": seed,
+                                "error": str(e),
+                            }
+                            failed_runs += 1
+                        finally:
+                            if orchestrator is not None:
+                                orchestrator.cleanup()
 
     # Save results summary
-    output_dir = Path("outputs/swift_apex_benchmark")
+    output_dir = Path(output_root)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     summary_path = output_dir / "experiment_results.json"
@@ -275,12 +316,13 @@ def _print_aggregated_results(results: Dict[str, Any], seeds: List[int]) -> None
     from collections import defaultdict
     import statistics
 
-    # Group by method+task (across seeds) — track both dev and test scores
+    # Group by model+method+task (across seeds) — track both dev and test scores
     grouped_dev: Dict[str, List[float]] = defaultdict(list)
     grouped_test: Dict[str, List[float]] = defaultdict(list)
     for key, r in results.items():
         if "error" not in r:
-            group_key = f"{r['method']}|{r['dataset']}/{r.get('task', '')}"
+            model = _model_slug(r["model"]) if r.get("model") else "default"
+            group_key = f"{model}|{r['method']}|{r['dataset']}/{r.get('task', '')}"
             grouped_dev[group_key].append(r["best_score"])
             grouped_test[group_key].append(r.get("test_score", 0.0))
 
@@ -288,16 +330,16 @@ def _print_aggregated_results(results: Dict[str, Any], seeds: List[int]) -> None
         return
 
     logger.info(
-        f"\n{'Method':<8} {'Dataset/Task':<38} "
+        f"\n{'Model':<24} {'Method':<8} {'Dataset/Task':<38} "
         f"{'Dev mean':<10} {'Test mean':<10} {'Test std':<10} {'Runs':<5}"
     )
-    logger.info("-" * 85)
+    logger.info("-" * 110)
     for group_key in sorted(grouped_test.keys()):
         dev_scores = grouped_dev[group_key]
         test_scores = grouped_test[group_key]
-        method, task_label = group_key.split("|", 1)
+        model, method, task_label = group_key.split("|", 2)
         logger.info(
-            f"{method:<8} {task_label:<38} "
+            f"{model:<24} {method:<8} {task_label:<38} "
             f"{statistics.mean(dev_scores):<10.4f} "
             f"{statistics.mean(test_scores):<10.4f} "
             f"{(statistics.stdev(test_scores) if len(test_scores) > 1 else 0.0):<10.4f} "
@@ -328,6 +370,11 @@ def main():
         help="Random seeds (default: 42 123 7)",
     )
     parser.add_argument(
+        "--models", nargs="+", default=None,
+        help="HF model names to loop over (default: `models:` list in the YAML, "
+             "or the single llm.model_name)",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Print what would be run without executing",
     )
@@ -339,6 +386,7 @@ def main():
         datasets=args.datasets,
         tasks=args.tasks,
         seeds=args.seeds,
+        models=args.models,
         config_path=args.config,
         dry_run=args.dry_run,
     )

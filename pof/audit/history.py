@@ -116,12 +116,9 @@ class OptimizationHistory:
             operator_counts=operator_counts,
         )
         self.generations.append(snapshot)
-
-        # Storage efficiency: strip text from non-top-N candidates
-        if self.complete_store is not None:
-            for record in sorted_pop[self.complete_store:]:
-                if record.is_complete:
-                    record.strip_text()
+        # NOTE: text stripping happens at export time (to_dict), never on live
+        # records — optimizers keep references to these objects, and stripping
+        # mid-run would feed empty prompts to crossover/mutation operators.
 
     def get_lineage(self, record_id: str) -> List[PromptRecord]:
         """Trace full lineage of a record back to its roots."""
@@ -149,7 +146,40 @@ class OptimizationHistory:
         return max(self.records.values(), key=lambda r: r.score)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize full history to dictionary."""
+        """Serialize history to dictionary (storage-efficient).
+
+        Full text is exported only for a representative subset: the overall
+        top-`complete_store` records by score, plus the best record of each
+        operator (diversity), plus the seed. All other records export
+        hash-only. Per-sample evaluation details are exported only for the
+        single best record — everything else would just flood the files.
+        """
+        sorted_recs = sorted(
+            self.records.values(), key=lambda r: r.score, reverse=True
+        )
+        best = sorted_recs[0] if sorted_recs else None
+
+        if self.complete_store is None:
+            keep_ids = {r.id for r in sorted_recs}
+        else:
+            keep_ids = {r.id for r in sorted_recs[: self.complete_store]}
+            # Diversity: keep the best example of each operator + the seed
+            seen_ops = set()
+            for r in sorted_recs:
+                if r.operator not in seen_ops:
+                    seen_ops.add(r.operator)
+                    keep_ids.add(r.id)
+
+        records_out: Dict[str, Any] = {}
+        for rid, r in self.records.items():
+            d = r.to_dict()
+            if rid not in keep_ids:
+                d["text"] = ""
+                d["is_complete"] = False
+            if best is None or rid != best.id:
+                d["per_sample_details"] = []
+            records_out[rid] = d
+
         return {
             "run_id": self.run_id,
             "method_name": self.method_name,
@@ -158,9 +188,7 @@ class OptimizationHistory:
             "total_records": len(self.records),
             "total_generations": len(self.generations),
             "generations": [g.to_dict() for g in self.generations],
-            "records": {
-                rid: r.to_dict() for rid, r in self.records.items()
-            },
+            "records": records_out,
         }
 
     def save(self, path: Path) -> None:

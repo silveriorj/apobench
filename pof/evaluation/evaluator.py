@@ -23,6 +23,12 @@ _EVAL_SYSTEM_PROMPT = (
     "Use only the answer letter or word — no reasoning, no explanation, no preamble."
 )
 
+# Math tasks need chain-of-thought (Qwen/Meta 0-shot convention): reason first,
+# then a \boxed{} final answer that the scorer extracts (final_em metric).
+_MATH_EVAL_SYSTEM_PROMPT = (
+    "Please reason step by step, and put your final answer within \\boxed{}."
+)
+
 
 class Evaluator:
     """Evaluate prompts against task samples with optional racing.
@@ -45,6 +51,10 @@ class Evaluator:
     ):
         self.llm = llm
         self.score_fn = score_fn or create_score_function(task_type)
+        self.task_type = task_type
+        self.system_prompt = (
+            _MATH_EVAL_SYSTEM_PROMPT if task_type == "math" else _EVAL_SYSTEM_PROMPT
+        )
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.batch_size = batch_size
@@ -174,7 +184,7 @@ class Evaluator:
         for i, sample in enumerate(samples_to_use):
             eval_prompt = self._format_eval_prompt(prompt, sample["input"])
             pred = self.llm.generate(
-                eval_prompt, config, system_prompt=_EVAL_SYSTEM_PROMPT
+                eval_prompt, config, system_prompt=self.system_prompt
             )
 
             target = sample["target"]
@@ -223,7 +233,7 @@ class Evaluator:
             batch = prompts[i: i + self.batch_size]
             logger.debug(f"[Eval] batch {batch_idx}/{n_batches} (samples {i+1}–{i+len(batch)}/{total})")
             predictions = self.llm.generate_batch(
-                batch, config, system_prompt=_EVAL_SYSTEM_PROMPT
+                batch, config, system_prompt=self.system_prompt
             )
             all_predictions.extend(predictions)
         return all_predictions

@@ -174,6 +174,14 @@ def get_seed_prompt(
             return content
         return extract_instruction(content)
 
+    elif dataset.lower() in ("livebench_math", "livebench/math"):
+        # LiveBench math is designed for zero-shot evaluation (final_em metric).
+        # Standard 0-shot CoT instruction (Meta/Qwen convention, boxed answer).
+        return (
+            "Solve the following math problem. Please reason step by step, "
+            "and put your final answer within \\boxed{}."
+        )
+
     elif dataset.lower() == "humaneval":
         # HumanEval doesn't have a standard CoT prompt
         # Use a generic code generation instruction

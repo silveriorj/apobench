@@ -1,0 +1,63 @@
+# =============================================================================
+# POF Experiment Config: Multi-Model Generalization Benchmark
+# =============================================================================
+# Tests whether optimizer rankings generalize across model scale and family:
+#   3 models × 4 BBH tasks × 5 methods × 3 seeds = 180 runs
+#
+# Models span two families and three sizes (all ungated on HF Hub):
+#   - Qwen/Qwen3-0.6B                  (small, same as main benchmark)
+#   - Qwen/Qwen3-1.7B                  (mid-size, same family)
+#   - microsoft/Phi-4-mini-instruct    (3.8B, different family)
+# Swap for Qwen/Qwen3-4B-Instruct-2507 if you prefer a within-family scale test.
+#
+# Usage:
+#   python experiments/run_swift_apex.py --config experiments/configs/multi_model_benchmark.yaml
+#   (the runner reads the `models:` list below and loops over it)
+# =============================================================================
+
+# --- Models for the generalization loop (read by run_swift_apex.py) ---
+models:
+  - deepseek-ai/deepseek-coder-7b-instruct-v1.5
+  - google/gemma-2-9b-it
+  - meta-llama/Llama-3.1-8B-Instruct
+
+# --- LLM Configuration (model_name is overridden per run from `models`) ---
+llm:
+  backend: huggingface
+  device: auto
+  dtype: auto
+  max_new_tokens: 512      # Operator generation tokens (mutation, crossover, EDA)
+  batch_size: 4
+  thinking_mode: false
+
+# --- Evaluation Configuration ---
+evaluation:
+  sample_size: 50          # Samples per optimization eval step (from dev split)
+  full_eval_size: 115      # Final test evaluation samples (fixed test split)
+  temperature: 0.0         # Greedy for evaluation
+  max_new_tokens: 32       # Overridden per task by EVAL_MAX_NEW_TOKENS in the runner
+  batch_size: 4
+  racing_enabled: true
+  racing_confidence: 0.05
+  racing_min_samples: 10
+
+# --- Optimizer Configuration (defaults, overridden per-run) ---
+optimizer:
+  population_size: 5
+  seed_prompt: ""          # Loaded dynamically from prompt repos
+
+# --- Output ---
+output_dir: outputs/multi_model_benchmark
+seed: 42
+verbose: true
+
+# --- Budget (hard caps, per run) ---
+budget:
+  time_seconds: 3600         # 1 hour wall-clock cap
+  max_calls: 5000            # Total LLM calls cap
+  max_total_tokens: 5_000_000  # Combined input+output tokens cap
+  max_generations: 10        # Max optimization generations
+  early_stop_patience: 3     # Stop if no improvement for 3 consecutive generations
+
+# --- Multi-seed experiment ---
+seeds: [42, 123, 456]

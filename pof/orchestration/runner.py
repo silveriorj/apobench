@@ -91,7 +91,19 @@ class RunOrchestrator:
 
         # Final test evaluation on held-out samples
         test_samples = dataset.get_eval_samples("test", n=self.config.evaluation.full_eval_size)
-        if test_samples and result.best_prompt:
+        if not result.best_prompt and self.config.optimizer.seed_prompt:
+            logger.warning(
+                "[Test eval] best prompt is empty — falling back to the seed prompt. "
+                "This indicates an optimizer bug (empty operator output?)"
+            )
+            result.best_prompt = self.config.optimizer.seed_prompt
+        if not test_samples:
+            logger.warning("[Test eval] skipped — dataset has no test samples")
+        elif not result.best_prompt:
+            logger.warning(
+                "[Test eval] skipped — best prompt is empty and no seed prompt to fall back to"
+            )
+        else:
             logger.info(
                 f"[Test eval] {len(test_samples)} samples on best prompt "
                 f"(dev score={result.best_score:.4f})"
@@ -99,8 +111,6 @@ class RunOrchestrator:
             test_result = evaluator.evaluate(result.best_prompt, test_samples)
             result.test_score = test_result.score
             logger.info(f"[Test eval] test_score={result.test_score:.4f}")
-        else:
-            logger.warning("[Test eval] skipped — no test samples or no best prompt")
 
         optimizer.tracker.test_score = result.test_score
 
