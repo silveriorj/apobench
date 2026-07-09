@@ -23,7 +23,7 @@ _EVAL_SYSTEM_PROMPT = (
     "Use only the answer letter or word — no reasoning, no explanation, no preamble."
 )
 
-# Math eval: direct answer, no CoT — eval budget is 16 tokens (same as BBH).
+# Math eval: direct answer, no CoT — eval budget is 8 tokens (GSM8K integers).
 # Scorer accepts both \boxed{} and "The answer is X" formats.
 _MATH_EVAL_SYSTEM_PROMPT = (
     "Give only the final answer. Write 'The answer is ' followed by the answer. "

@@ -57,7 +57,7 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     "reasoning_about_colored_objects": 64,
     "web_of_lies": 16,
     # Other datasets
-    "livebench_math": 16,   # direct "The answer is X" format — no CoT, same budget as BBH
+    "gsm8k": 8,             # "The answer is N" — integer only, 4+1 tokens max
     "humaneval": 1024,      # full function body
 }
 
@@ -79,8 +79,8 @@ DATASETS = {
         ],
         "task_type": "auto",
     },
-    "livebench_math": {
-        "tasks": [""],  # All subtasks pooled (AMPS_Hard, math_comp, olympiad)
+    "gsm8k": {
+        "tasks": [""],  # Single split (test set, 1319 problems)
         "task_type": "math",
     },
     "humaneval": {
