@@ -268,10 +268,18 @@ class BaseOptimizer(ABC):
                 record.scores["dev"] = result.score
                 record.scores["minibatch"] = mb.score
                 n_pass += 1
+                logger.info(
+                    f"[Gate] op={record.operator}: minibatch={mb.score:.3f} "
+                    f"→ dev={result.score:.3f} (selection uses dev)"
+                )
             else:
                 record.score = mb.score
                 record.scores["minibatch"] = mb.score
                 record.metadata["gate"] = "rejected"
+                logger.info(
+                    f"[Gate] op={record.operator}: minibatch={mb.score:.3f} "
+                    f"< baseline−slack — rejected, no full eval"
+                )
         logger.info(
             f"[Minibatch gate] {n_pass}/{len(candidates)} candidates passed "
             f"(baseline={baseline_score:.3f}, slack={slack})"

@@ -89,6 +89,20 @@ class SWIFTOptimizer(BaseOptimizer):
         )
         candidates.append(self._create_record(few_shot_prompt, operator="few_shot_init"))
 
+        # Format-constraint variant: explicit output-format rule from real
+        # targets — strict extraction penalizes format drift more than
+        # reasoning errors on small models (Sclar et al. 2023).
+        base_text = self.seed_prompt or (candidates[0].text if candidates else "")
+        if base_text:
+            targets = [s["target"] for s in train_samples[:3]]
+            sample_answers = ", ".join(repr(t)[:30] for t in targets)
+            fmt_text = (
+                f"{base_text.rstrip()}\n\nAnswer with ONLY the final answer, "
+                f"exactly in the same format as these examples: {sample_answers}. "
+                f"No explanation."
+            )
+            candidates.append(self._create_record(fmt_text, operator="format_constraint_init"))
+
         if self.seed_prompt:
             candidates.append(self._create_record(self.seed_prompt, operator="seed"))
 
@@ -150,6 +164,25 @@ class SWIFTOptimizer(BaseOptimizer):
                             variants[0], operator="failure_guided_var",
                             parent_ids=[record.id],
                         ))
+
+        # Few-shot augmentation of the current top-2: the strongest known
+        # lever (CAPO/SEE) competes from Phase 1, not only in the final polish.
+        import random as _random
+        train = self.dataset.get_few_shot_examples(n=6)
+        for record in self.population[:2]:
+            if not train:
+                break
+            k = _random.randint(1, min(3, len(train)))
+            shots = _random.sample(train, k)
+            examples = "\n\n".join(
+                f"Input: {s['input']}\nOutput: {s['target']}" for s in shots
+            )
+            fs_text = f"{record.text}\n\nExamples:\n{examples}"
+            if not self._is_duplicate(fs_text):
+                candidates.append(self._create_record(
+                    fs_text, operator="few_shot_phase1", parent_ids=[record.id],
+                    num_few_shots=k,
+                ))
 
         new_candidates = [c for c in candidates if c.score == 0.0]
         baseline = self.best_record.score if self.best_record else 0.0
