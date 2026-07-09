@@ -152,13 +152,15 @@ def load_dataset_by_name(
         return _load_bbh(task, num_samples, seed)
     elif name.lower() in ("livebench_math", "livebench/math"):
         return _load_livebench_math(task, num_samples, seed)
+    elif name.lower() == "gsm8k":
+        return _load_gsm8k(num_samples, seed)
     elif name.lower() == "humaneval":
         return _load_humaneval(num_samples, seed)
     elif name.endswith(".json") or Path(name).exists():
         return _load_json(name, num_samples, seed)
     else:
         raise DatasetError(
-            f"Unknown dataset: {name}. Use 'bbh', 'livebench_math', or a JSON file path."
+            f"Unknown dataset: {name}. Use 'bbh', 'gsm8k', 'livebench_math', or a JSON file path."
         )
 
 
@@ -298,6 +300,62 @@ def _load_livebench_math(task: str, num_samples: int, seed: int) -> TaskDataset:
         test_samples=test,
         task_type="math",
         metadata={"source": "livebench/math", "task": task},
+    )
+
+
+def _load_gsm8k(num_samples: int, seed: int) -> TaskDataset:
+    """Load GSM8K (HF: openai/gsm8k) — grade-school math word problems.
+
+    HF train split (7473) → few-shot train examples (8 samples).
+    HF test split (1319)  → shuffled, then split into test (115) and dev (rest).
+    Targets are the integer answer extracted from the '#### N' suffix in the
+    HF answer field, so the scorer compares against "The answer is N" format.
+    """
+    import re as _re
+
+    try:
+        from datasets import load_dataset as hf_load_dataset
+    except ImportError:
+        raise DatasetError("'datasets' package required. Run: pip install datasets")
+
+    try:
+        hf_train = hf_load_dataset("openai/gsm8k", "main", split="train")
+        hf_test = hf_load_dataset("openai/gsm8k", "main", split="test")
+    except Exception as e:
+        raise DatasetError(f"Failed to load openai/gsm8k: {e}") from e
+
+    def _extract_answer(answer_text: str) -> str:
+        m = _re.search(r"####\s*([0-9,]+)", answer_text)
+        return m.group(1).replace(",", "") if m else answer_text.strip()
+
+    # Few-shot train examples: sample 8 from HF train split
+    rng = random.Random(seed)
+    train_indices = rng.sample(range(len(hf_train)), min(8, len(hf_train)))
+    train_samples = [
+        {"input": hf_train[i]["question"], "target": _extract_answer(hf_train[i]["answer"])}
+        for i in train_indices
+    ]
+
+    # Dev + test from HF test split
+    test_samples_raw = [
+        {"input": item["question"], "target": _extract_answer(item["answer"])}
+        for item in hf_test
+    ]
+    rng.shuffle(test_samples_raw)
+
+    n_test = min(115, max(1, len(test_samples_raw) - 50))
+    test = test_samples_raw[:n_test]
+    dev = test_samples_raw[n_test:]
+
+    logger.info(f"GSM8K loaded: {len(train_samples)} train, {len(dev)} dev, {len(test)} test")
+
+    return TaskDataset(
+        name="gsm8k",
+        train_samples=train_samples,
+        dev_samples=dev,
+        test_samples=test,
+        task_type="math",
+        metadata={"source": "openai/gsm8k"},
     )
 
 
