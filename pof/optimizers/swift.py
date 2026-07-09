@@ -3,17 +3,24 @@
 A proposed method designed to match SEE's budget (~34 LLM calls) while
 outperforming it through:
 
-1. Failure-guided improvement in EVERY phase (SEE only does this in Phase 1)
-2. Trajectory-augmented generation (OPRO-style; SEE lacks this)
-3. Semantic crossover of top performers (SEE's Phase 2, but with context)
-4. PLUM local-edit final polish + full eval (SEE's Phase 3 is random mutation)
-5. Hoeffding racing on eval (SEE uses full eval every time)
+1. Failure-guided improvement with ProTeGi-style expansion: each textual
+   gradient also spawns a paraphrase, exploring around the fix at zero
+   extra diagnosis cost (Pryzant et al. 2023)
+2. Trajectory-augmented generation (OPRO-style): FULL instructions plus
+   task exemplars in the meta-prompt (Yang et al. 2023)
+3. Semantic crossover of top performers
+4. Polish phase: PLUM local edits + few-shot exemplar augmentation
+   (joint instruction+ICL search, cf. CAPO/SEE) + full eval
+5. GEPA-style minibatch gate (Agrawal et al. 2025): candidates are screened
+   on a FRESH random dev minibatch each phase, and only survivors get the
+   full dev evaluation — selection never overfits one fixed subset
+6. Hash dedup so no candidate is evaluated twice
 
 Budget breakdown (population_size K=5):
-  Phase 0 Init:       K+2 diverse seeds → Racing eval → top K
-  Phase 1 Failure:    K structured improvements → Racing eval → top K
-  Phase 2 Trajectory: 2 OPRO-style + 3 crossovers → Racing eval → top K
-  Phase 3 Polish:     K local edits + few-shot variants → Full eval → final
+  Phase 0 Init:       K+2 diverse seeds → Full eval → top K
+  Phase 1 Failure:    K improvements + K paraphrases → Gate → top K
+  Phase 2 Trajectory: 2 OPRO-style + 3 crossovers → Gate → top K
+  Phase 3 Polish:     K local edits + 2 few-shot variants → Full eval → final
 """
 from __future__ import annotations
 
@@ -130,14 +137,23 @@ class SWIFTOptimizer(BaseOptimizer):
             failures = [d for d in details if not d["correct"]]
             if failures:
                 improved = self._structured_improve(record.text, failures)
-                if improved:
+                if improved and not self._is_duplicate(improved):
                     candidates.append(self._create_record(
                         improved, operator="failure_guided", parent_ids=[record.id]
                     ))
+                    # ProTeGi-style expansion: a paraphrase of each improvement
+                    # explores around the textual gradient at zero extra
+                    # diagnosis cost (Pryzant et al. 2023).
+                    variants = self._semantic_variation(improved, n=1)
+                    if variants and not self._is_duplicate(variants[0]):
+                        candidates.append(self._create_record(
+                            variants[0], operator="failure_guided_var",
+                            parent_ids=[record.id],
+                        ))
 
         new_candidates = [c for c in candidates if c.score == 0.0]
         baseline = self.best_record.score if self.best_record else 0.0
-        self._evaluate_with_racing(new_candidates, baseline)
+        self._evaluate_with_minibatch_gate(new_candidates, baseline)
         return self._select_top_k(candidates)
 
     def _phase_trajectory_crossover(self) -> List[PromptRecord]:
@@ -153,7 +169,7 @@ class SWIFTOptimizer(BaseOptimizer):
         trajectory_context = self._build_trajectory_context()
         for _ in range(2):
             new_text = self._trajectory_generate(trajectory_context)
-            if new_text:
+            if new_text and not self._is_duplicate(new_text):
                 candidates.append(self._create_record(
                     new_text, operator="trajectory_climb",
                     parent_ids=[r.id for r in self.population[:3]]
@@ -163,27 +179,46 @@ class SWIFTOptimizer(BaseOptimizer):
         for i in range(min(3, len(self.population) - 1)):
             a, b = self.population[i], self.population[i + 1]
             cross = self._crossover(a.text, b.text)
-            if cross.strip():
+            if cross.strip() and not self._is_duplicate(cross):
                 candidates.append(self._create_record(
                     cross, operator="crossover", parent_ids=[a.id, b.id]
                 ))
 
         new_candidates = [c for c in candidates if c.score == 0.0]
         baseline = self.best_record.score if self.best_record else 0.0
-        self._evaluate_with_racing(new_candidates, baseline)
+        self._evaluate_with_minibatch_gate(new_candidates, baseline)
         return self._select_top_k(candidates)
 
     def _phase_polish(self) -> List[PromptRecord]:
         """Phase 3: Local edit polish + full evaluation."""
-        logger.info("[SWIFT Phase 3] Polish (local edits + full eval)")
+        logger.info("[SWIFT Phase 3] Polish (local edits + few-shot + full eval)")
         candidates = list(self.population)
+        import random as _random
 
         for record in self.population[:self.population_size]:
             # Local edit
             edited = self._local_edit(record.text)
-            if edited:
+            if edited and not self._is_duplicate(edited):
                 candidates.append(self._create_record(
                     edited, operator="local_edit_polish", parent_ids=[record.id]
+                ))
+
+        # Few-shot augmentation of the top-2 (joint instruction+ICL search,
+        # cf. CAPO/SEE — exemplars are the strongest single lever on BBH).
+        train = self.dataset.get_few_shot_examples(n=6)
+        for record in self.population[:2]:
+            if not train:
+                break
+            k = _random.randint(1, min(3, len(train)))
+            shots = _random.sample(train, k)
+            examples = "\n\n".join(
+                f"Input: {s['input']}\nOutput: {s['target']}" for s in shots
+            )
+            fs_text = f"{record.text}\n\nExamples:\n{examples}"
+            if not self._is_duplicate(fs_text):
+                candidates.append(self._create_record(
+                    fs_text, operator="few_shot_polish", parent_ids=[record.id],
+                    num_few_shots=k,
                 ))
 
         # Full evaluation (no racing) for precise final selection
@@ -225,18 +260,27 @@ class SWIFTOptimizer(BaseOptimizer):
         return result.strip() if result.strip() else None
 
     def _build_trajectory_context(self) -> str:
-        """Build OPRO-style trajectory context from history."""
+        """Build OPRO-style trajectory context: FULL instructions, not
+        fragments (Yang et al. 2023 keep up to 20 complete instructions)."""
         entries = []
         for record in sorted(self.population, key=lambda r: r.score):
-            entries.append(f"Score: {record.score:.3f} | Instruction: {record.text[:100]}")
+            entries.append(f"Score: {record.score:.3f}\nInstruction: {record.text}\n")
         return "\n".join(entries)
 
     def _trajectory_generate(self, context: str) -> Optional[str]:
-        """Generate a new prompt using trajectory context (OPRO-style)."""
+        """Generate a new prompt using trajectory context (OPRO-style).
+
+        Includes task exemplars in the meta-prompt, per OPRO's ablations."""
+        exemplars = self.dataset.get_few_shot_examples(n=2)
+        exemplar_text = "\n".join(
+            f"Input: {s['input'][:150]}\nOutput: {s['target']}" for s in exemplars
+        )
         meta_prompt = (
-            "Below are instructions sorted by their performance scores (ascending). "
-            "Generate a NEW instruction that would score higher than all of them.\n\n"
-            f"{context}\n\n"
+            "Below are instructions for a task, sorted by performance score "
+            "(ascending). Task examples:\n"
+            f"{exemplar_text}\n\n"
+            f"Instructions and scores:\n{context}\n"
+            "Write a NEW instruction that would score higher than all of the above.\n\n"
             "New higher-scoring instruction:"
         )
         result = self._generate_prompt(meta_prompt, temperature=0.8, system_prompt=_GENERATE_SYSTEM_PROMPT)

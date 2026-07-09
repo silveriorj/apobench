@@ -233,6 +233,51 @@ class BaseOptimizer(ABC):
                 record.scores["dev"] = result.score
         return candidates
 
+    def _evaluate_with_minibatch_gate(
+        self,
+        candidates: List[PromptRecord],
+        baseline_score: float,
+        minibatch_size: int = 16,
+        slack: float = 0.10,
+    ) -> List[PromptRecord]:
+        """GEPA-style two-stage evaluation (Agrawal et al. 2025).
+
+        Stage 1: each candidate is scored on a FRESH random dev minibatch
+        (resampled every call, so selection never overfits one fixed subset).
+        Stage 2: only candidates within `slack` of the baseline on the
+        minibatch get the full dev evaluation used for selection.
+
+        Rejected candidates keep their minibatch score (they rank low and
+        drop out at selection) and are marked in metadata for the audit.
+        """
+        minibatch = self.dataset.get_eval_samples(
+            "dev", n=minibatch_size, seed=random.randint(0, 10**6)
+        )
+        full_samples = self.dataset.get_eval_samples("dev", n=self.eval_sample_size)
+
+        n_pass = 0
+        for record in candidates:
+            if not record.text:
+                continue
+            mb = self.evaluator.evaluate(record.text, minibatch)
+            if mb.score + slack >= baseline_score:
+                result = self.evaluator.evaluate(record.text, full_samples)
+                record.score = result.score
+                record.performance_vector = result.performance_vector
+                record.per_sample_details = result.per_sample_details
+                record.scores["dev"] = result.score
+                record.scores["minibatch"] = mb.score
+                n_pass += 1
+            else:
+                record.score = mb.score
+                record.scores["minibatch"] = mb.score
+                record.metadata["gate"] = "rejected"
+        logger.info(
+            f"[Minibatch gate] {n_pass}/{len(candidates)} candidates passed "
+            f"(baseline={baseline_score:.3f}, slack={slack})"
+        )
+        return candidates
+
     def _select_top_k(
         self, candidates: List[PromptRecord], k: Optional[int] = None
     ) -> List[PromptRecord]:
@@ -247,6 +292,17 @@ class BaseOptimizer(ABC):
             current_best = max(self.population, key=lambda r: r.score)
             if self.best_record is None or current_best.score > self.best_record.score:
                 self.best_record = current_best
+
+    def _is_duplicate(self, text: str) -> bool:
+        """True if an identical prompt was already generated this run.
+
+        Duplicate candidates waste a full (racing) evaluation each — operators
+        like paraphrase and crossover regenerate near-identical text often.
+        """
+        if not text:
+            return True
+        text_hash = PromptRecord._compute_hash(text.strip())
+        return self.tracker.history.get_by_hash(text_hash) is not None
 
     def _create_record(
         self,
