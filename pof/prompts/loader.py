@@ -175,11 +175,11 @@ def get_seed_prompt(
         return extract_instruction(content)
 
     elif dataset.lower() in ("livebench_math", "livebench/math"):
-        # LiveBench math is designed for zero-shot evaluation (final_em metric).
-        # Standard 0-shot CoT instruction (Meta/Qwen convention, boxed answer).
+        # Direct answer-only seed prompt (GSM8K ao-style). Eval is capped at
+        # 16 tokens; scorer accepts "The answer is X" or \boxed{}.
         return (
-            "Solve the following math problem. Please reason step by step, "
-            "and put your final answer within \\boxed{}."
+            "Solve the following math problem. "
+            "Write 'The answer is ' followed by the final answer only."
         )
 
     elif dataset.lower() == "humaneval":

@@ -23,10 +23,11 @@ _EVAL_SYSTEM_PROMPT = (
     "Use only the answer letter or word — no reasoning, no explanation, no preamble."
 )
 
-# Math tasks need chain-of-thought (Qwen/Meta 0-shot convention): reason first,
-# then a \boxed{} final answer that the scorer extracts (final_em metric).
+# Math eval: direct answer, no CoT — eval budget is 16 tokens (same as BBH).
+# Scorer accepts both \boxed{} and "The answer is X" formats.
 _MATH_EVAL_SYSTEM_PROMPT = (
-    "Please reason step by step, and put your final answer within \\boxed{}."
+    "Give only the final answer. Write 'The answer is ' followed by the answer. "
+    "Do not show any reasoning or steps."
 )
 
 # Code tasks (HumanEval): output executable code only — the scorer runs it.

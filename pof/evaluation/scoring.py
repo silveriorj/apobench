@@ -68,19 +68,23 @@ def _score_auto(prediction: str, target: str) -> int:
     return _score_text(prediction, target)
 
 
-def _score_math(prediction: str, target: str) -> int:
-    """Score mathematical answers (final_em style, \\boxed{} aware).
+def _extract_answer_is(text: str) -> Optional[str]:
+    """Extract 'The answer is X' or 'the answer is X' pattern."""
+    m = re.search(r'[Tt]he answer is\s+(.+?)(?:\s*[.\n]|$)', text.strip())
+    return m.group(1).strip() if m else None
 
-    The final answer is extracted from \\boxed{...} (last occurrence, per
-    LiveBench/Meta's 0-shot CoT convention) or from a JSON answer field; the
-    extracted answer is compared numerically when both sides parse as numbers,
-    otherwise by normalized exact match (handles expressions, tuples, letters).
+
+def _score_math(prediction: str, target: str) -> int:
+    """Score mathematical answers (final_em style).
+
+    Extraction priority: \\boxed{} → 'The answer is X' → JSON answer field.
+    Comparison: normalized exact match, then sympy equivalence.
     """
-    pred_final = _extract_boxed(prediction)
+    pred_final = _extract_boxed(prediction) or _extract_answer_is(prediction)
     if pred_final is None:
         json_match = re.search(r'"answer"\s*:\s*"([^"]*)"', prediction)
         pred_final = json_match.group(1) if json_match else None
-    target_final = _extract_boxed(target) or target
+    target_final = _extract_boxed(target) or _extract_answer_is(target) or target
 
     # Exact match on the extracted final answer (LaTeX-normalized)
     if pred_final is not None:

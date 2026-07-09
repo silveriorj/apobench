@@ -57,7 +57,7 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     "reasoning_about_colored_objects": 64,
     "web_of_lies": 16,
     # Other datasets
-    "livebench_math": 512,  # 0-shot CoT: reasoning + \boxed{} final answer
+    "livebench_math": 16,   # direct "The answer is X" format — no CoT, same budget as BBH
     "humaneval": 1024,      # full function body
 }
 
