@@ -170,9 +170,14 @@ def get_seed_prompt(
 
     elif dataset.lower() == "gsm8k":
         content = fetch_gsm8k_prompt(cache=cache)
+        instruction = (
+            "Solve the following math problem step by step. "
+            "Let's think step by step. "
+            "Show your work clearly and provide the final numeric answer."
+        )
         if use_full_prompt:
-            return content
-        return extract_instruction(content)
+            return content.rstrip() + "\n\n" + instruction
+        return instruction
 
     elif dataset.lower() in ("livebench_math", "livebench/math"):
         return (
@@ -181,12 +186,10 @@ def get_seed_prompt(
         )
 
     elif dataset.lower() == "humaneval":
-        # HumanEval doesn't have a standard CoT prompt
-        # Use a generic code generation instruction
         return (
-            "Complete the following Python function based on the docstring. "
-            "Write only the function body, ensuring it handles all edge cases "
-            "described in the docstring. Output clean, correct Python code."
+            "Write a correct Python function that solves the following "
+            "programming problem. Include only the function definition "
+            "in your response."
         )
 
     else:
