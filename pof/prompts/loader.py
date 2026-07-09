@@ -23,10 +23,10 @@ BBH_PROMPT_BASE_URL = (
     "https://raw.githubusercontent.com/beeevita/EvoPrompt/main/BBH/lib_prompt"
 )
 
-# GSM8K prompt source (chain-of-thought-hub)
+# GSM8K prompt source (chain-of-thought-hub) — mid CoT: "Let's think step by step" + "The answer is N"
 GSM8K_PROMPT_URL = (
     "https://raw.githubusercontent.com/FranxYao/chain-of-thought-hub/main/"
-    "gsm8k/lib_prompt/prompt_simple_4_cases_ao.txt"
+    "gsm8k/lib_prompt/prompt_mid.txt"
 )
 
 # BBH tasks available
@@ -106,9 +106,9 @@ def fetch_gsm8k_prompt(cache: bool = True) -> str:
     """Fetch the GSM8K few-shot prompt from chain-of-thought-hub.
 
     Returns:
-        Full prompt text with 4-case answer-only examples.
+        Full prompt text (mid CoT: step-by-step + "The answer is N").
     """
-    cache_path = CACHE_DIR / "gsm8k" / "prompt_simple_4_cases_ao.txt"
+    cache_path = CACHE_DIR / "gsm8k" / "prompt_mid.txt"
     if cache and cache_path.exists():
         logger.debug("Loading cached GSM8K prompt")
         return cache_path.read_text(encoding="utf-8")
@@ -175,8 +175,6 @@ def get_seed_prompt(
         return extract_instruction(content)
 
     elif dataset.lower() in ("livebench_math", "livebench/math"):
-        # Direct answer-only seed prompt (GSM8K ao-style). Eval is capped at
-        # 16 tokens; scorer accepts "The answer is X" or \boxed{}.
         return (
             "Solve the following math problem. "
             "Write 'The answer is ' followed by the final answer only."

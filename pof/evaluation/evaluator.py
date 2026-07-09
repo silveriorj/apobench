@@ -23,11 +23,10 @@ _EVAL_SYSTEM_PROMPT = (
     "Use only the answer letter or word — no reasoning, no explanation, no preamble."
 )
 
-# Math eval: direct answer, no CoT — eval budget is 8 tokens (GSM8K integers).
-# Scorer accepts both \boxed{} and "The answer is X" formats.
+# Math eval: brief CoT allowed; scorer extracts "The answer is X" from the end.
 _MATH_EVAL_SYSTEM_PROMPT = (
-    "Give only the final answer. Write 'The answer is ' followed by the answer. "
-    "Do not show any reasoning or steps."
+    "Solve the problem step by step. "
+    "At the end, write 'The answer is ' followed by the final answer."
 )
 
 # Code tasks (HumanEval): output executable code only — the scorer runs it.

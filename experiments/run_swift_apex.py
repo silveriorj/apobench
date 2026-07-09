@@ -57,7 +57,7 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     "reasoning_about_colored_objects": 64,
     "web_of_lies": 16,
     # Other datasets
-    "gsm8k": 8,             # "The answer is N" — integer only, 4+1 tokens max
+    "gsm8k": 128,           # mid CoT tops out at ~94 tokens; 128 covers real problems + buffer
     "humaneval": 1024,      # full function body
 }
 
