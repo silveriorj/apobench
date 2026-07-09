@@ -57,8 +57,8 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     "reasoning_about_colored_objects": 64,
     "web_of_lies": 16,
     # Other datasets
-    "gsm8k": 256,           # mid CoT avg 189 tokens; 256 covers p90; reference used 512
-    "humaneval": 1024,      # reference capped at 512 (p90/p95/p99 all hit cap); 1024 avoids truncation
+    "gsm8k": 128,           # compact CoT enforced by prompt; prompt_mid examples max at 94 tokens
+    "humaneval": 512,      # reference capped at 512 (p90/p95/p99 all hit cap);
 }
 
 # Default fallback when task is not listed above

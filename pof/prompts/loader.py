@@ -169,15 +169,11 @@ def get_seed_prompt(
         return extract_instruction(content)
 
     elif dataset.lower() == "gsm8k":
-        content = fetch_gsm8k_prompt(cache=cache)
-        instruction = (
+        return (
             "Solve the following math problem step by step. "
-            "Let's think step by step. "
-            "Show your work clearly and provide the final numeric answer."
+            "Use brief one-line calculations. "
+            "End with \"The answer is N\" where N is your final answer."
         )
-        if use_full_prompt:
-            return content.rstrip() + "\n\n" + instruction
-        return instruction
 
     elif dataset.lower() in ("livebench_math", "livebench/math"):
         return (
