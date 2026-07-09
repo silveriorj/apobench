@@ -267,7 +267,7 @@ def run_experiment(
                                 "total_time": result.total_time,
                                 "llm_calls": result.llm_usage.total_calls if result.llm_usage else 0,
                                 "total_tokens": result.llm_usage.total_tokens if result.llm_usage else 0,
-                                "best_prompt": result.best_prompt[:200],
+                                "best_prompt": result.best_prompt,
                             }
                             completed_runs += 1
                             logger.info(

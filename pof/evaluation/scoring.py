@@ -86,6 +86,9 @@ def _score_math(prediction: str, target: str) -> int:
     if pred_final is not None:
         if _normalize_math(pred_final) == _normalize_math(target_final):
             return 1
+        # Mathematical equivalence (LiveBench-style leniency): 0.5 == \frac{1}{2}
+        if _math_equiv(pred_final, target_final):
+            return 1
 
     pred_num = _extract_number(prediction)
     target_num = _extract_number(target)
@@ -168,12 +171,64 @@ def _indent(code: str, prefix: str = "    ") -> str:
                      for line in code.split("\n"))
 
 
+def _latex_to_expr(s: str) -> str:
+    """Convert common LaTeX math markup to a sympy-parseable expression."""
+    s = s.strip().strip("$")
+    s = re.sub(r"\\left|\\right", "", s)
+    s = re.sub(r"\\[,;! ]", "", s)          # LaTeX spacing commands
+    # \sqrt first (turns its braces into parens so nested \frac args match)
+    s = re.sub(r"\\sqrt\[([^\]]+)\]\{([^{}]+)\}", r"((\2)**(1/(\1)))", s)
+    s = re.sub(r"\\sqrt\{([^{}]+)\}", r"sqrt(\1)", s)
+    # \frac{a}{b} → ((a)/(b)) — repeat to unwrap nesting
+    frac = re.compile(r"\\d?frac\{([^{}]+)\}\{([^{}]+)\}")
+    while frac.search(s):
+        s = frac.sub(r"((\1)/(\2))", s)
+    s = s.replace(r"\cdot", "*").replace(r"\times", "*").replace(r"\pi", "pi")
+    s = s.replace("^", "**")
+    s = re.sub(r"\{([^{}]*)\}", r"(\1)", s)  # remaining braces → parens
+    s = re.sub(r"\\([a-zA-Z]+)", r"\1", s)   # strip leftover LaTeX commands
+    return s
+
+
+def _math_equiv(a: str, b: str) -> bool:
+    """Check mathematical equivalence via sympy (0.5 == \\frac{1}{2}).
+
+    Mirrors the leniency of LiveBench's official final_em scorer. Numeric
+    comparison first (fast, robust); symbolic simplification as fallback.
+    Any parse failure returns False (falls back to stricter checks).
+    """
+    try:
+        from sympy.parsing.sympy_parser import (
+            parse_expr,
+            standard_transformations,
+            implicit_multiplication_application,
+        )
+        import sympy
+
+        transformations = standard_transformations + (
+            implicit_multiplication_application,
+        )
+        ea = parse_expr(_latex_to_expr(a), transformations=transformations)
+        eb = parse_expr(_latex_to_expr(b), transformations=transformations)
+
+        # Numeric comparison when both evaluate to a number
+        va, vb = ea.evalf(), eb.evalf()
+        if va.is_number and vb.is_number:
+            return abs(complex(va) - complex(vb)) < 1e-9
+
+        # Symbolic fallback
+        return sympy.simplify(ea - eb) == 0
+    except Exception:
+        return False
+
+
 def _normalize_math(text: str) -> str:
     """Normalize a LaTeX/math answer for exact-match comparison.
 
     Removes presentation-only markup (mirroring LiveBench's scorer):
     dollar signs, \\left/\\right, LaTeX spacing (\\, \\; \\!, escaped
-    spaces), and all whitespace. Case-insensitive.
+    spaces), and all whitespace. Case-insensitive. Answers that don't match
+    textually get a second chance via sympy equivalence (_math_equiv).
     """
     if not text:
         return ""
@@ -188,12 +243,24 @@ def _normalize_math(text: str) -> str:
 def _extract_boxed(text: str) -> Optional[str]:
     """Extract the content of the LAST \\boxed{...} in the text.
 
-    Handles one level of nested braces (e.g. \\boxed{\\frac{1}{2}}).
+    Uses brace counting, so arbitrarily nested LaTeX is handled
+    (e.g. \\boxed{\\frac{\\sqrt{2}}{2}}).
     """
     if not text:
         return None
-    matches = re.findall(r"\\boxed\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}", text)
-    return matches[-1].strip() if matches else None
+    result = None
+    for match in re.finditer(r"\\boxed\{", text):
+        start = match.end()
+        depth = 1
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    result = text[start:i].strip()
+                    break
+    return result
 
 
 def _score_mcq(prediction: str, target: str) -> int:
