@@ -247,6 +247,18 @@ def run_experiment(
                     for seed in seeds:
                         run_key = f"{model_label}_{method}_{task_label}_seed{seed}"
 
+                        # Skip if result file already exists (safe to re-launch)
+                        _task_fs = f"{dataset}_{task}" if task else dataset
+                        if model:
+                            _run_dir = Path(output_root) / _model_slug(model) / method / _task_fs / f"seed_{seed}"
+                        else:
+                            _run_dir = Path(output_root) / method / _task_fs / f"seed_{seed}"
+                        _result_file = _run_dir / f"result_{method}_{_task_fs}.json"
+                        if _result_file.exists():
+                            logger.info(f"  ↩ SKIP {method}/{_task_fs}/seed_{seed} (result exists)")
+                            completed_runs += 1
+                            continue
+
                         logger.info(f"\n{'='*60}")
                         logger.info(f"RUN: {method} on {task_label} [model={model_label} seed={seed}]")
                         logger.info(f"{'='*60}")
