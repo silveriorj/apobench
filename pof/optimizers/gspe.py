@@ -197,9 +197,11 @@ class GSPEOptimizer(BaseOptimizer):
         return self._parse_structure(result, fields_to_generate)
 
     def _parse_structure(
-        self, text: str, expected_fields: List[str]
+        self, text: str, expected_fields: Optional[List[str]] = None
     ) -> Dict[str, str]:
         """Parse LLM output into structured fields."""
+        if expected_fields is None:
+            expected_fields = list(PROMPT_GRAMMAR.keys())
         structure: Dict[str, str] = {}
         current_field = None
 

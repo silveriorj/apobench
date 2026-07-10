@@ -26,6 +26,16 @@ from pof.core.exceptions import BudgetExceeded
 
 logger = logging.getLogger(__name__)
 
+# Prompt grammar: typed fields for structured decomposition.
+# Used by SWIFT/APEX for field-targeted mutation and crossover.
+PROMPT_GRAMMAR: Dict[str, str] = {
+    "preamble":        "Context-setting opening (role, expertise, context)",
+    "task_definition": "Clear statement of what to do",
+    "output_spec":     "Expected output format and constraints",
+    "reasoning_guide": "Step-by-step reasoning instructions (optional)",
+    "error_prevention": "Common mistakes to avoid (optional)",
+}
+
 # System prompts injected per operator category so the model knows its role
 # and keeps output format tight.
 
@@ -445,3 +455,125 @@ class BaseOptimizer(ABC):
             "New instruction:"
         )
         return self._generate_prompt(meta_prompt, temperature=0.8, system_prompt=_GENERATE_SYSTEM_PROMPT)
+
+    # --- Structured decomposition (shared by SWIFT, APEX) ---
+
+    def _decompose_to_structure(self, prompt: str) -> Dict[str, str]:
+        """Decompose a free-form prompt into PROMPT_GRAMMAR fields (1 LLM call)."""
+        field_list = "\n".join(
+            f"- {field.upper()}: {desc}" for field, desc in PROMPT_GRAMMAR.items()
+        )
+        meta_prompt = (
+            f"Decompose the following instruction into its structural components.\n"
+            f"Use exactly these field names, one per line:\n{field_list}\n\n"
+            f"Instruction:\n{prompt}\n\n"
+            f"Decomposition (format: FIELD_NAME: content):"
+        )
+        result = self._generate_prompt(meta_prompt, temperature=0.3)
+        return self._parse_structure(result)
+
+    def _parse_structure(self, text: str) -> Dict[str, str]:
+        """Parse 'FIELD_NAME: content' lines into a structure dict."""
+        structure: Dict[str, str] = {}
+        current_field: Optional[str] = None
+        fields = list(PROMPT_GRAMMAR.keys())
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            matched = False
+            for field in fields:
+                if line.upper().startswith(f"{field.upper()}:"):
+                    current_field = field
+                    structure[field] = line.split(":", 1)[1].strip()
+                    matched = True
+                    break
+            if not matched and current_field:
+                structure[current_field] = structure.get(current_field, "") + " " + line
+        if not structure:
+            structure["task_definition"] = text.strip()
+        return structure
+
+    def _render_structure(self, structure: Dict[str, str]) -> str:
+        """Render a structure dict back into a coherent prompt string."""
+        parts = [structure[f] for f in PROMPT_GRAMMAR if structure.get(f)]
+        return "\n".join(parts) if parts else "Solve the task."
+
+    def _get_or_decompose(
+        self, record: PromptRecord, structures: Dict[str, Dict[str, str]]
+    ) -> Dict[str, str]:
+        """Return cached structure for record, decomposing once if absent."""
+        if record.id not in structures:
+            structures[record.id] = self._decompose_to_structure(record.text)
+        return structures[record.id]
+
+    def _structure_crossover_fields(
+        self,
+        record_a: PromptRecord,
+        record_b: PromptRecord,
+        structures: Dict[str, Dict[str, str]],
+    ) -> Optional[str]:
+        """Field-level crossover: take each field from the higher-scoring parent.
+
+        Falls back to None if either structure is missing, letting the caller
+        use the LLM-based _crossover instead.
+        """
+        struct_a = structures.get(record_a.id, {})
+        struct_b = structures.get(record_b.id, {})
+        if not struct_a or not struct_b:
+            return None
+        child: Dict[str, str] = {}
+        for field in PROMPT_GRAMMAR:
+            val_a = struct_a.get(field, "")
+            val_b = struct_b.get(field, "")
+            if val_a and val_b:
+                # Prefer the higher-scoring parent's field (70 % bias) for
+                # fitness-proportional crossover, matching GSPE's approach.
+                prefer_a = record_a.score >= record_b.score
+                child[field] = val_a if (random.random() < 0.7) == prefer_a else val_b
+            elif val_a:
+                child[field] = val_a
+            elif val_b:
+                child[field] = val_b
+        rendered = self._render_structure(child)
+        return rendered if rendered.strip() else None
+
+    def _field_targeted_improve(
+        self,
+        record: PromptRecord,
+        failures: List[Dict[str, Any]],
+        structures: Dict[str, Dict[str, str]],
+    ) -> Optional[str]:
+        """Attribute failures to a specific grammar field; improve only that field.
+
+        Returns the re-rendered prompt with the improved field, or None if the
+        structure is unavailable or the LLM produces no usable output.
+        """
+        structure = structures.get(record.id)
+        if not structure:
+            return None
+        failure_text = "\n".join(
+            f"- Expected: {f.get('target', '')} | Got: {f.get('prediction', '')[:60]}"
+            for f in failures[:3]
+        )
+        fields_text = "\n".join(
+            f"- {field.upper()}: {value[:80]}"
+            for field, value in structure.items() if value
+        )
+        meta_prompt = (
+            f"A prompt has these structural components:\n{fields_text}\n\n"
+            f"It fails on these examples:\n{failure_text}\n\n"
+            f"Identify the single field most responsible for the failures and provide "
+            f"an improved version of that field only.\n"
+            f"Format your answer as: FIELD_NAME: improved content"
+        )
+        result_text = self._generate_prompt(meta_prompt, temperature=0.6)
+        new_fields = self._parse_structure(result_text)
+        if not new_fields:
+            return None
+        new_structure = dict(structure)
+        for field, value in new_fields.items():
+            if value:
+                new_structure[field] = value
+        rendered = self._render_structure(new_structure)
+        return rendered if rendered.strip() and rendered != record.text else None

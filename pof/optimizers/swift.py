@@ -53,6 +53,8 @@ class SWIFTOptimizer(BaseOptimizer):
             **kwargs,
         )
         self._phase_idx = 0
+        # Structured decomposition cache: record.id → {field: text}
+        self._structures: Dict[str, Dict[str, str]] = {}
 
     def _init_population(self) -> List[PromptRecord]:
         """Phase 0: Diverse seed generation.
@@ -92,8 +94,10 @@ class SWIFTOptimizer(BaseOptimizer):
         # Format-constraint variant: explicit output-format rule from real
         # targets — strict extraction penalizes format drift more than
         # reasoning errors on small models (Sclar et al. 2023).
+        # Skipped for math/code: those tasks need CoT/full code, not answer-only.
         base_text = self.seed_prompt or (candidates[0].text if candidates else "")
-        if base_text:
+        task_type = getattr(self.evaluator, "task_type", "auto")
+        if base_text and task_type not in ("math", "code", "text"):
             targets = [s["target"] for s in train_samples[:3]]
             sample_answers = ", ".join(repr(t)[:30] for t in targets)
             fmt_text = (
@@ -104,11 +108,20 @@ class SWIFTOptimizer(BaseOptimizer):
             candidates.append(self._create_record(fmt_text, operator="format_constraint_init"))
 
         if self.seed_prompt:
-            candidates.append(self._create_record(self.seed_prompt, operator="seed"))
+            seed_record = self._create_record(self.seed_prompt, operator="seed")
+            candidates.append(seed_record)
 
         logger.info(f"[Init] {len(candidates)} candidates generated — starting evaluation ...")
         self._evaluate_population(candidates)
         top = self._select_top_k(candidates)
+
+        # Decompose seed prompt once so Phase 1/2 can do field-targeted ops.
+        if self.seed_prompt:
+            for r in candidates:
+                if r.operator == "seed":
+                    self._structures[r.id] = self._decompose_to_structure(r.text)
+                    break
+
         logger.info(
             f"[Init] top-{len(top)} selected:"
             + "".join(f"\n  [{r.score:.3f}] op={r.operator} {r.text[:60]!r}..." for r in top)
@@ -165,6 +178,20 @@ class SWIFTOptimizer(BaseOptimizer):
                             parent_ids=[record.id],
                         ))
 
+                # Field-targeted improvement: decompose once, fix only the
+                # field the LLM identifies as responsible — more precise than
+                # a full rewrite and avoids breaking parts already working.
+                field_improved = self._field_targeted_improve(
+                    record, failures, self._structures
+                )
+                if field_improved and not self._is_duplicate(field_improved):
+                    fi_record = self._create_record(
+                        field_improved, operator="field_targeted", parent_ids=[record.id]
+                    )
+                    candidates.append(fi_record)
+                    # Cache the structure for downstream crossover ops.
+                    self._structures[fi_record.id] = self._decompose_to_structure(field_improved)
+
         # Few-shot augmentation of the current top-2: the strongest known
         # lever (CAPO/SEE) competes from Phase 1, not only in the final polish.
         import random as _random
@@ -208,14 +235,27 @@ class SWIFTOptimizer(BaseOptimizer):
                     parent_ids=[r.id for r in self.population[:3]]
                 ))
 
-        # Pairwise crossovers
+        # Pairwise crossovers — first pair uses field-level crossover (more
+        # precise than LLM text merge); remaining pairs use LLM crossover.
         for i in range(min(3, len(self.population) - 1)):
             a, b = self.population[i], self.population[i + 1]
-            cross = self._crossover(a.text, b.text)
-            if cross.strip() and not self._is_duplicate(cross):
-                candidates.append(self._create_record(
-                    cross, operator="crossover", parent_ids=[a.id, b.id]
-                ))
+            if i == 0:
+                # Ensure both parents have a cached structure (decompose if needed).
+                self._get_or_decompose(a, self._structures)
+                self._get_or_decompose(b, self._structures)
+                cross = self._structure_crossover_fields(a, b, self._structures)
+                op = "struct_crossover"
+                if not cross:
+                    cross = self._crossover(a.text, b.text)
+                    op = "crossover"
+            else:
+                cross = self._crossover(a.text, b.text)
+                op = "crossover"
+            if cross and cross.strip() and not self._is_duplicate(cross):
+                xr = self._create_record(cross, operator=op, parent_ids=[a.id, b.id])
+                candidates.append(xr)
+                if op == "struct_crossover":
+                    self._structures[xr.id] = self._decompose_to_structure(cross)
 
         new_candidates = [c for c in candidates if c.score == 0.0]
         baseline = self.best_record.score if self.best_record else 0.0
