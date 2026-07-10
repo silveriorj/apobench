@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # EXPERIMENT MATRIX
 # =============================================================================
 
-METHODS = ["swift", "apex", "gaapo", "see", "capo"]  # Methods to run (default: all)
+METHODS = ["swift", "apex", "gspe", "gaapo", "see", "capo"]  # Methods to run (default: all)
 
 # Random seeds for statistical robustness (3 runs per configuration)
 SEEDS = [42, 123, 7]
@@ -57,7 +57,7 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     "reasoning_about_colored_objects": 64,
     "web_of_lies": 16,
     # Other datasets
-    "gsm8k": 128,           # compact CoT enforced by prompt; prompt_mid examples max at 94 tokens
+    "gsm8k": 256,           # CoT via prompt_mid few-shot; avg ~189 tokens, 256 covers p90
     "humaneval": 512,      # reference capped at 512 (p90/p95/p99 all hit cap);
 }
 
