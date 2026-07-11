@@ -179,6 +179,7 @@ class OptimizationResult:
     best_prompt: str
     best_score: float          # score on dev/eval samples during optimization
     test_score: float = 0.0   # score on held-out test samples after optimization
+    test_per_sample_details: List[Dict[str, Any]] = field(default_factory=list)
     optimization_history: List[Dict[str, Any]] = field(default_factory=list)
     final_population: List[Dict[str, Any]] = field(default_factory=list)
     llm_usage: Optional[LLMUsageStats] = None
@@ -193,6 +194,7 @@ class OptimizationResult:
             "best_prompt": self.best_prompt,
             "best_score": self.best_score,
             "test_score": self.test_score,
+            "test_per_sample_details": self.test_per_sample_details,
             "optimization_history": self.optimization_history,
             "final_population": self.final_population,
             "llm_usage": self.llm_usage.to_dict() if self.llm_usage else None,

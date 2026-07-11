@@ -120,9 +120,9 @@ class Evaluator:
             performance_vector.append(score)
             num_correct += score
             per_sample_details.append({
-                "input": sample["input"][:100],
+                "input": sample["input"],
                 "target": target,
-                "prediction": pred[:200],
+                "prediction": pred,
                 "correct": bool(score),
             })
 
@@ -199,9 +199,9 @@ class Evaluator:
             performance_vector.append(score)
             num_correct += score
             per_sample_details.append({
-                "input": sample["input"][:100],
+                "input": sample["input"],
                 "target": target,
-                "prediction": pred[:200],
+                "prediction": pred,
                 "correct": bool(score),
             })
 

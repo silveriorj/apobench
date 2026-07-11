@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from pof.config.schemas import RunConfig
+from pof.core.exceptions import BudgetExceeded
 from pof.core.types import OptimizationResult
 from pof.datasets.loader import TaskDataset, load_dataset_by_name
 from pof.evaluation.evaluator import Evaluator
@@ -87,7 +88,20 @@ class RunOrchestrator:
             f"Starting run: method={self.config.optimizer.method}, "
             f"dataset={dataset.name}, model={self.config.llm.model_name}"
         )
-        result = optimizer.optimize()
+        try:
+            result = optimizer.optimize()
+        except BudgetExceeded as be:
+            # Defensive: well-behaved optimizers catch BudgetExceeded internally.
+            # If one leaks it, recover from the tracker rather than losing the run.
+            logger.warning(
+                f"[Budget] {be.kind} exhausted before optimize() returned; "
+                "recovering best result from tracker."
+            )
+            result = optimizer.tracker.to_optimization_result()
+
+        # Detach budget from the LLM so the test eval is never blocked by
+        # exhausted time/call/token caps from the optimization phase.
+        llm.attach_budget(None)
 
         # Final test evaluation on held-out samples
         test_samples = dataset.get_eval_samples("test", n=self.config.evaluation.full_eval_size)
@@ -110,9 +124,22 @@ class RunOrchestrator:
             )
             test_result = evaluator.evaluate(result.best_prompt, test_samples)
             result.test_score = test_result.score
+            result.test_per_sample_details = test_result.per_sample_details
             logger.info(f"[Test eval] test_score={result.test_score:.4f}")
 
         optimizer.tracker.test_score = result.test_score
+
+        # Enrich result config with the full run settings for audit.
+        result.config.update({
+            "model": self.config.llm.model_name,
+            "eval_max_new_tokens": self.config.evaluation.max_new_tokens,
+            "eval_temperature": self.config.evaluation.temperature,
+            "eval_sample_size": self.config.evaluation.sample_size,
+            "full_eval_size": self.config.evaluation.full_eval_size,
+            "dataset_num_samples": self.config.dataset.num_samples,
+            "dataset_task": self.config.dataset.task or "",
+            "run_seed": self.config.seed,
+        })
 
         # Save audit trail
         optimizer.tracker.save_json()

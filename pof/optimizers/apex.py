@@ -72,8 +72,6 @@ class APEXOptimizer(BaseOptimizer):
         self.candidates_per_operator = candidates_per_operator
         self.ucb_c = ucb_c
         self._operator_scores: Dict[str, List[float]] = {}
-        # Structured decomposition cache: record.id → {field: text}
-        self._structures: Dict[str, Dict[str, str]] = {}
 
     def _init_population(self) -> List[PromptRecord]:
         """Initialize with expert-persona-generated candidates."""
@@ -100,15 +98,7 @@ class APEXOptimizer(BaseOptimizer):
             candidates.append(self._create_record(self.seed_prompt, operator="seed"))
 
         self._evaluate_population(candidates)
-        top = self._select_top_k(candidates)
-
-        # Decompose the top-K prompts once so field-targeted operators have
-        # structures available from the first iteration onward.
-        for r in top:
-            if r.id not in self._structures:
-                self._structures[r.id] = self._decompose_to_structure(r.text)
-
-        return top
+        return self._select_top_k(candidates)
 
     def _step(self) -> List[PromptRecord]:
         """Adaptive step: UCB1-select operators and apply them."""
@@ -150,19 +140,15 @@ class APEXOptimizer(BaseOptimizer):
         value = mean(scores) + c * sqrt(ln(total_pulls) / pulls_i).
         Unpulled operators have infinite value, so every operator is tried
         before any is repeated — no premature greedy lock-in.
-
-        Note: with num_iterations=4 and 7 operators each arm gets ~1-2 pulls
-        total, so the bandit rarely moves past the exploration phase. This is
-        a known limitation at tight budgets; documented in the paper.
         """
         all_operators = [
-            ("expert_refine",          self._op_expert_refine),
-            ("failure_guided",         self._op_failure_guided),
-            ("field_targeted",         self._op_structured_field_improve),
-            ("crossover",              self._op_crossover),
-            ("trajectory",             self._op_trajectory),
-            ("few_shot",               self._op_few_shot),
-            ("format_constraint",      self._op_format_constraint),
+            ("expert_refine", self._op_expert_refine),
+            ("failure_guided", self._op_failure_guided),
+            ("crossover", self._op_crossover),
+            ("trajectory", self._op_trajectory),
+            ("semantic_var", self._op_semantic_variation),
+            ("few_shot", self._op_few_shot),
+            ("format_constraint", self._op_format_constraint),
         ]
 
         total_pulls = sum(len(v) for v in self._operator_scores.values())
@@ -221,52 +207,34 @@ class APEXOptimizer(BaseOptimizer):
         return [result] if result.strip() else []
 
     def _op_failure_guided(self) -> List[str]:
-        """Failure-guided improvement of a random elite.
-
-        Generates an improved prompt, then a ProTeGi-style paraphrase of that
-        improvement (Pryzant et al. 2023) — two candidates for the cost of one
-        diagnosis, exploring around the textual gradient.
-        """
+        """Failure-guided improvement of a random elite."""
         record = random.choice(self.population[:3]) if self.population else None
         if not record:
             return []
 
-        # Reuse cached per_sample_details — no extra eval call needed.
-        details = record.per_sample_details or []
+        details = record.per_sample_details
+        if not details and record.text:
+            samples = self.dataset.get_eval_samples("dev", n=self.eval_sample_size)
+            result = self.evaluator.evaluate(record.text, samples)
+            details = result.per_sample_details
+            record.per_sample_details = details
+            record.score = result.score
+            record.performance_vector = result.performance_vector
+
         failures = [d for d in details if not d["correct"]]
         if not failures:
             return []
 
         improved = self._feedback_improve(record.text, failures)
-        results = []
-        if improved and improved.strip():
-            results.append(improved)
-            # ProTeGi-style expansion: paraphrase explores around the fix.
-            variants = self._semantic_variation(improved, n=1)
-            if variants and variants[0].strip() and not self._is_duplicate(variants[0]):
-                results.append(variants[0])
-        return results
+        return [improved] if improved and improved.strip() else []
 
     def _op_crossover(self) -> List[str]:
-        """Crossover two random elites.
-
-        Tries field-level crossover first (more precise than an LLM text merge);
-        falls back to LLM crossover when one or both parents lack a structure.
-        """
+        """Crossover two random elites."""
         if len(self.population) < 2:
             return []
         a, b = random.sample(self.population[:4], 2)
-        # Ensure structures are available (decompose lazily if needed).
-        self._get_or_decompose(a, self._structures)
-        self._get_or_decompose(b, self._structures)
-        result = self._structure_crossover_fields(a, b, self._structures)
-        if not result:
-            result = self._crossover(a.text, b.text)
-        if result and result.strip():
-            # Cache the structure of the crossover child for later operators.
-            # (Deferred — only decompose if the child actually passes the gate.)
-            return [result]
-        return []
+        result = self._crossover(a.text, b.text)
+        return [result] if result.strip() else []
 
     def _op_trajectory(self) -> List[str]:
         """OPRO-style trajectory generation.
@@ -316,35 +284,12 @@ class APEXOptimizer(BaseOptimizer):
         )
         return [f"{record.text}\n\nExamples:\n{examples}"]
 
-    def _op_structured_field_improve(self) -> List[str]:
-        """Field-targeted improvement: attribute failures to a grammar field.
-
-        Decomposes the prompt (cached), asks the LLM which field caused the
-        failures, and returns a re-rendered prompt with only that field changed.
-        More precise than _op_failure_guided's full-prompt rewrite.
-        """
-        record = random.choice(self.population[:3]) if self.population else None
-        if not record:
-            return []
-        details = record.per_sample_details or []
-        failures = [d for d in details if not d["correct"]]
-        if not failures:
-            return []
-        # Ensure structure is cached.
-        self._get_or_decompose(record, self._structures)
-        result = self._field_targeted_improve(record, failures, self._structures)
-        return [result] if result and result.strip() else []
-
     def _op_format_constraint(self) -> List[str]:
         """Append an explicit output-format rule derived from the targets.
 
         Strict extraction penalizes format drift more than reasoning errors
         on small models (format sensitivity, Sclar et al. 2023).
-        Skipped for math/code: those tasks need CoT/full code, not answer-only.
         """
-        task_type = getattr(self.evaluator, "task_type", "auto")
-        if task_type in ("math", "code", "text"):
-            return []
         record = random.choice(self.population[:3]) if self.population else None
         if not record:
             return []
