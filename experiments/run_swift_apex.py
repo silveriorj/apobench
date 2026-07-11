@@ -57,8 +57,8 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     "reasoning_about_colored_objects": 64,
     "web_of_lies": 16,
     # Other datasets
-    "gsm8k": 320,
-    "humaneval": 768,
+    "gsm8k": 512,
+    "humaneval": 1024,
 }
 
 # Default fallback when task is not listed above
