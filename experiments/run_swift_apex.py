@@ -47,7 +47,7 @@ SEEDS = [42, 123, 7]
 # single-word or letter answers (Yes/No, A/B/C, color name).
 EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     # BBH
-    "dyck_languages": 32,
+    "dyck_languages": 512,
     "causal_judgement": 16,
     "disambiguation_qa": 16,
     "formal_fallacies": 16,
@@ -68,13 +68,14 @@ _DEFAULT_EVAL_MAX_NEW_TOKENS = 32
 DATASETS = {
     "bbh": {
         "tasks": [
-            "causal_judgement",
-            "disambiguation_qa",
-            "formal_fallacies",
-            "hyperbaton",
-            # "logical_deduction_five_objects",
+            # "causal_judgement",
+            # "disambiguation_qa",
+            # "formal_fallacies",
+            # "hyperbaton",
+            "dyck_languages",
+            "logical_deduction_five_objects",
             # "penguins_in_a_table",
-            # "reasoning_about_colored_objects",
+            "reasoning_about_colored_objects",
             # "web_of_lies",
         ],
         "task_type": "auto",
