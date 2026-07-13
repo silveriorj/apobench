@@ -47,16 +47,18 @@ SEEDS = [42, 123, 7]
 # MCQ/boolean/color tasks: single word/letter → 16 is sufficient.
 # GSM8K/HumanEval use different system prompts that allow CoT/code output.
 EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
-    # BBH
+    # BBH — CoT budgets based on chain-of-thought-hub example lengths + 50% margin.
+    # causal_judgement / disambiguation_qa / hyperbaton: ~256-266 est tokens → 384
+    # formal_fallacies: ~510 est tokens (first-order logic notation) → 512
     "dyck_languages": 1024,  # stack CoT: up to ~30 steps × 12 tok + conclusion ≈ 430 tok
-    "causal_judgement": 16,
-    "disambiguation_qa": 16,
-    "formal_fallacies": 16,
-    "hyperbaton": 16,
-    "logical_deduction_five_objects": 16,
-    "penguins_in_a_table": 16,
-    "reasoning_about_colored_objects": 16,
-    "web_of_lies": 16,
+    "causal_judgement": 384,
+    "disambiguation_qa": 384,
+    "formal_fallacies": 512,
+    "hyperbaton": 384,
+    "logical_deduction_five_objects": 384,
+    "penguins_in_a_table": 384,
+    "reasoning_about_colored_objects": 384,
+    "web_of_lies": 384,
     # Other datasets
     "gsm8k": 512,
     "humaneval": 1024,
@@ -69,16 +71,16 @@ _DEFAULT_EVAL_MAX_NEW_TOKENS = 32
 # Calibrated for DeepSeek-Coder-7B on 20 GB: MHA with 32 KV heads → ~512 KB/tok (32 layers).
 # Model weights ~14 GB, leaving ~5 GB. BBH tasks fit at batch=8; gsm8k at 4; humaneval at 2.
 EVAL_BATCH_SIZE: Dict[str, int] = {
-    # BBH — seq ≤ 700 tok → batch=4 costs ~1.5 GB KV (safe for all three models)
-    "dyck_languages": 4,
-    "causal_judgement": 4,
-    "disambiguation_qa": 4,
-    "formal_fallacies": 4,
-    "hyperbaton": 4,
-    "logical_deduction_five_objects": 4,
-    "penguins_in_a_table": 4,
-    "reasoning_about_colored_objects": 4,
-    "web_of_lies": 4,
+    # BBH — batch=2: CoT outputs up to 512 tok push peak KV to ~1.1 GB on Gemma-9B.
+    "dyck_languages": 2,
+    "causal_judgement": 2,
+    "disambiguation_qa": 2,
+    "formal_fallacies": 2,
+    "hyperbaton": 2,
+    "logical_deduction_five_objects": 2,
+    "penguins_in_a_table": 2,
+    "reasoning_about_colored_objects": 2,
+    "web_of_lies": 2,
     # GSM8K — seq ~900 tok → batch=4 costs ~1.8 GB KV
     "gsm8k": 2,
     # HumanEval — seq ~1500 tok → batch=2 costs ~1.5 GB KV
@@ -100,6 +102,14 @@ _DEFAULT_EVAL_TIME_BUDGET = 7200  # BBH tasks
 # Empty string means auto-detect from dataset samples (default for most BBH tasks).
 # "dyck" routes to _DYCK_EVAL_SYSTEM_PROMPT in evaluator.py (brief CoT + bracket answer).
 EVAL_TASK_TYPE: Dict[str, str] = {
+    "causal_judgement": "cot",
+    "disambiguation_qa": "cot",
+    "formal_fallacies": "cot",
+    "hyperbaton": "cot",
+    "logical_deduction_five_objects": "cot",
+    "penguins_in_a_table": "cot",
+    "reasoning_about_colored_objects": "cot",
+    "web_of_lies": "cot",
     "dyck_languages": "dyck",
 }
 

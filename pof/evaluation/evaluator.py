@@ -35,6 +35,14 @@ _CODE_EVAL_SYSTEM_PROMPT = (
     "no explanations, no usage examples, no markdown commentary."
 )
 
+# General CoT for BBH tasks: reason step by step, end with "The answer is X".
+# _score_auto extracts the final answer via _extract_cot_answer.
+_COT_EVAL_SYSTEM_PROMPT = (
+    "Think through the problem step by step. "
+    "At the end of your reasoning, write 'The answer is ' followed by your final answer "
+    "(a single word, letter, or short phrase — no additional explanation after it)."
+)
+
 # Dyck-n: bracket completion requires stack simulation — allow brief CoT.
 # Force the compact chain-of-thought-hub format (one line per symbol, no markdown)
 # so the simulation fits within the 512-token budget even for 50-symbol inputs.
@@ -71,6 +79,7 @@ class Evaluator:
         self.system_prompt = {
             "math": _MATH_EVAL_SYSTEM_PROMPT,
             "code": _CODE_EVAL_SYSTEM_PROMPT,
+            "cot": _COT_EVAL_SYSTEM_PROMPT,
             "dyck": _DYCK_EVAL_SYSTEM_PROMPT,
         }.get(task_type, _EVAL_SYSTEM_PROMPT)
         self.max_new_tokens = max_new_tokens
