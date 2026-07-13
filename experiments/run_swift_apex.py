@@ -50,14 +50,14 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     # BBH — compact one-line CoT: ~5-8 steps × ~10 tok/line + conclusion.
     # formal_fallacies needs more room for first-order logic notation.
     "dyck_languages": 1024,  # stack CoT: up to ~30 steps × 12 tok + conclusion ≈ 430 tok
-    "causal_judgement": 128,
-    "disambiguation_qa": 128,
+    "causal_judgement": 192,
+    "disambiguation_qa": 192,
     "formal_fallacies": 256,
-    "hyperbaton": 128,
-    "logical_deduction_five_objects": 128,
-    "penguins_in_a_table": 128,
-    "reasoning_about_colored_objects": 128,
-    "web_of_lies": 128,
+    "hyperbaton": 192,
+    "logical_deduction_five_objects": 192,
+    "penguins_in_a_table": 192,
+    "reasoning_about_colored_objects": 192,
+    "web_of_lies": 192,
     # Other datasets
     "gsm8k": 512,
     "humaneval": 1024,

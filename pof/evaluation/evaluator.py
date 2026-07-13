@@ -40,6 +40,7 @@ _CODE_EVAL_SYSTEM_PROMPT = (
 # _score_auto extracts the final answer via _extract_cot_answer.
 _COT_EVAL_SYSTEM_PROMPT = (
     "Reason through the problem using brief one-line steps — one thought per line, no prose. "
+    "Do not state the answer directly without reasoning first. "
     "End with 'So the answer is ' followed by your final answer "
     "(a single word, letter, or short phrase — nothing after it)."
 )
