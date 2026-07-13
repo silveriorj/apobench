@@ -66,6 +66,29 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
 # Default fallback when task is not listed above
 _DEFAULT_EVAL_MAX_NEW_TOKENS = 32
 
+# Per-task eval batch size.
+# KV cache cost = batch × seq_len × 512 KB/tok (MHA 7B: 32 layers × 32 KV heads × 128 head_dim).
+# 7B MHA on 20 GB: ~5 GB usable after weights; BBH seqs ~700 tok, GSM8K ~900, HumanEval ~1500.
+# If the model uses GQA (fewer KV heads), these can be raised safely.
+EVAL_BATCH_SIZE: Dict[str, int] = {
+    # BBH — short outputs, seq ≤ 700 tok → batch=8 costs ~2.8 GB KV
+    "dyck_languages": 8,
+    "causal_judgement": 8,
+    "disambiguation_qa": 8,
+    "formal_fallacies": 8,
+    "hyperbaton": 8,
+    "logical_deduction_five_objects": 8,
+    "penguins_in_a_table": 8,
+    "reasoning_about_colored_objects": 8,
+    "web_of_lies": 8,
+    # GSM8K — 512 tok output, seq ~900 → batch=4 costs ~1.8 GB KV
+    "gsm8k": 4,
+    # HumanEval — 1024 tok output, seq ~1500 → batch=2 costs ~1.5 GB KV
+    "humaneval": 2,
+}
+
+_DEFAULT_EVAL_BATCH_SIZE = 4
+
 # Dataset configurations
 DATASETS = {
     "bbh": {
@@ -110,7 +133,9 @@ def build_run_config(
 ) -> RunConfig:
     """Build a RunConfig for a specific method/dataset/task/model combination."""
     task_label = f"{dataset}_{task}" if task else dataset
-    eval_max_tokens = EVAL_MAX_NEW_TOKENS.get(task or dataset, _DEFAULT_EVAL_MAX_NEW_TOKENS)
+    key = task or dataset
+    eval_max_tokens = EVAL_MAX_NEW_TOKENS.get(key, _DEFAULT_EVAL_MAX_NEW_TOKENS)
+    eval_batch_size = EVAL_BATCH_SIZE.get(key, _DEFAULT_EVAL_BATCH_SIZE)
     run_dir = f"{output_root}/{method}/{task_label}/seed_{seed}"
     if model_name:
         run_dir = f"{output_root}/{_model_slug(model_name)}/{method}/{task_label}/seed_{seed}"
@@ -125,6 +150,7 @@ def build_run_config(
         },
         "evaluation": {
             "max_new_tokens": eval_max_tokens,
+            "batch_size": eval_batch_size,
         },
         "seed": seed,
         "output_dir": run_dir,

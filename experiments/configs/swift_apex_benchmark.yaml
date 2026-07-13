@@ -23,7 +23,7 @@ evaluation:
   full_eval_size: 115      # Final test evaluation samples (fixed test split)
   temperature: 0.0         # Greedy for evaluation
   max_new_tokens: 32       # Short direct answers; model is instructed to skip CoT
-  batch_size: 6            # GPU batch size: 8 fits 4B model on 12GB+ VRAM
+  batch_size: 4            # Default; overridden per-task in run_swift_apex.py EVAL_BATCH_SIZE
   racing_enabled: true
   racing_confidence: 0.05
   racing_min_samples: 10
