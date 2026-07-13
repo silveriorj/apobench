@@ -69,18 +69,18 @@ _DEFAULT_EVAL_MAX_NEW_TOKENS = 32
 # Calibrated for DeepSeek-Coder-7B on 20 GB: MHA with 32 KV heads → ~512 KB/tok (32 layers).
 # Model weights ~14 GB, leaving ~5 GB. BBH tasks fit at batch=8; gsm8k at 4; humaneval at 2.
 EVAL_BATCH_SIZE: Dict[str, int] = {
-    # BBH — seq ≤ 700 tok → batch=8 costs ~3.5 GB KV
-    "dyck_languages": 8,
-    "causal_judgement": 8,
-    "disambiguation_qa": 8,
-    "formal_fallacies": 8,
-    "hyperbaton": 8,
-    "logical_deduction_five_objects": 8,
-    "penguins_in_a_table": 8,
-    "reasoning_about_colored_objects": 8,
-    "web_of_lies": 8,
+    # BBH — seq ≤ 700 tok → batch=4 costs ~1.5 GB KV (safe for all three models)
+    "dyck_languages": 4,
+    "causal_judgement": 4,
+    "disambiguation_qa": 4,
+    "formal_fallacies": 4,
+    "hyperbaton": 4,
+    "logical_deduction_five_objects": 4,
+    "penguins_in_a_table": 4,
+    "reasoning_about_colored_objects": 4,
+    "web_of_lies": 4,
     # GSM8K — seq ~900 tok → batch=4 costs ~1.8 GB KV
-    "gsm8k": 4,
+    "gsm8k": 2,
     # HumanEval — seq ~1500 tok → batch=2 costs ~1.5 GB KV
     "humaneval": 2,
 }
