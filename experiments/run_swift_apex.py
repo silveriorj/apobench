@@ -287,14 +287,10 @@ def run_experiment(
 
             for task in ds_tasks:
                 # Fetch seed prompt (once per task, shared across seeds).
-                # BBH: use instruction line only — the full CoT file creates a
-                # 4-shot format that conflicts with the JSON system prompt (causes
-                # CoT output instead of JSON answer).
-                # Exception: dyck_languages uses _DYCK_EVAL_SYSTEM_PROMPT which
-                # explicitly asks for CoT, so its 3 worked examples are consistent
-                # and teach the model the exact stack-simulation + "So the answer
-                # is X" format it needs.
-                use_full = dataset.lower() != "bbh" or task == "dyck_languages"
+                # BBH: use full prompt (instruction + 3 CoT examples) for all tasks.
+                # All BBH tasks now use _COT_EVAL_SYSTEM_PROMPT, so the few-shot
+                # examples are consistent with the expected "So the answer is X" format.
+                use_full = True
                 try:
                     seed_prompt = get_seed_prompt(dataset, task, use_full_prompt=use_full)
                     logger.info(f"Loaded seed prompt for {dataset}/{task} ({len(seed_prompt)} chars)")
