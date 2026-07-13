@@ -53,11 +53,11 @@ verbose: true
 
 # --- Budget (hard caps, per run) ---
 budget:
-  time_seconds: 3600         # 1 hour wall-clock cap
+  time_seconds: 7200         # 1 hour wall-clock cap
   max_calls: 5000            # Total LLM calls cap
   max_total_tokens: 5_000_000  # Combined input+output tokens cap
   max_generations: 10        # Max optimization generations
-  early_stop_patience: 3     # Stop if no improvement for 3 consecutive generations
+  early_stop_patience: 5     # Stop if no improvement for 5 consecutive generations
 
 # --- Multi-seed experiment ---
 seeds: [42, 123, 456]

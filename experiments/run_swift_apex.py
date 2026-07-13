@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # EXPERIMENT MATRIX
 # =============================================================================
 
-METHODS = ["swift", "apex", "gspe", "gaapo", "see", "capo"]  # Methods to run (default: all)
+METHODS = ["swift", "apex", "capo", "gaapo", "see"]  # Methods to run
 
 # Random seeds for statistical robustness (3 runs per configuration)
 SEEDS = [42, 123, 7]
@@ -87,6 +87,15 @@ EVAL_BATCH_SIZE: Dict[str, int] = {
 
 _DEFAULT_EVAL_BATCH_SIZE = 4
 
+# Per-task wall-clock budget (seconds).
+# GSM8K and HumanEval get 7200s so that slower methods (GAAPO, SEE) hit the cap
+# and their scores are recorded as lower bounds, making SWIFT/APEX cuts visible.
+EVAL_TIME_BUDGET: Dict[str, int] = {
+    "gsm8k": 7200,
+    "humaneval": 7200,
+}
+_DEFAULT_EVAL_TIME_BUDGET = 7200  # BBH tasks
+
 # Per-task evaluator task_type override.
 # Empty string means auto-detect from dataset samples (default for most BBH tasks).
 # "dyck" routes to _DYCK_EVAL_SYSTEM_PROMPT in evaluator.py (brief CoT + bracket answer).
@@ -98,15 +107,10 @@ EVAL_TASK_TYPE: Dict[str, str] = {
 DATASETS = {
     "bbh": {
         "tasks": [
-            # "causal_judgement",
-            # "disambiguation_qa",
-            # "formal_fallacies",
-            # "hyperbaton",
-            "dyck_languages",
-            "logical_deduction_five_objects",
-            "penguins_in_a_table",
-            "reasoning_about_colored_objects",
-            # "web_of_lies",
+            "causal_judgement",
+            "disambiguation_qa",
+            "formal_fallacies",
+            "hyperbaton",
         ],
         "task_type": "auto",
     },
@@ -142,6 +146,7 @@ def build_run_config(
     eval_max_tokens = EVAL_MAX_NEW_TOKENS.get(key, _DEFAULT_EVAL_MAX_NEW_TOKENS)
     eval_batch_size = EVAL_BATCH_SIZE.get(key, _DEFAULT_EVAL_BATCH_SIZE)
     eval_task_type = EVAL_TASK_TYPE.get(key, "")
+    eval_time_budget = EVAL_TIME_BUDGET.get(key, _DEFAULT_EVAL_TIME_BUDGET)
     run_dir = f"{output_root}/{method}/{task_label}/seed_{seed}"
     if model_name:
         run_dir = f"{output_root}/{_model_slug(model_name)}/{method}/{task_label}/seed_{seed}"
@@ -157,6 +162,9 @@ def build_run_config(
         "evaluation": {
             "max_new_tokens": eval_max_tokens,
             "batch_size": eval_batch_size,
+        },
+        "budget": {
+            "time_seconds": eval_time_budget,
         },
         "seed": seed,
         "output_dir": run_dir,
