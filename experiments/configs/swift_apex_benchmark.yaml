@@ -10,7 +10,7 @@
 # --- LLM Configuration ---
 llm:
   backend: huggingface
-  model_name: Qwen/Qwen3-4B-Instruct-2507
+  model_name: Qwen/Qwen3-4B-Instruct-2507  # GQA 8 KV heads, ~8 GB weights on bf16
   device: auto
   dtype: auto
   max_new_tokens: 512      # Operator generation tokens (mutation, crossover, EDA)
@@ -23,7 +23,7 @@ evaluation:
   full_eval_size: 115      # Final test evaluation samples (fixed test split)
   temperature: 0.0         # Greedy for evaluation
   max_new_tokens: 32       # Short direct answers; model is instructed to skip CoT
-  batch_size: 4            # Default; overridden per-task in run_swift_apex.py EVAL_BATCH_SIZE
+  batch_size: 16           # Default; overridden per-task in run_swift_apex.py EVAL_BATCH_SIZE
   racing_enabled: true
   racing_confidence: 0.05
   racing_min_samples: 10

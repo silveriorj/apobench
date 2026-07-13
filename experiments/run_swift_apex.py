@@ -67,27 +67,27 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
 _DEFAULT_EVAL_MAX_NEW_TOKENS = 32
 
 # Per-task eval batch size.
-# KV cache cost = batch × seq_len × 512 KB/tok (MHA 7B: 32 layers × 32 KV heads × 128 head_dim).
-# 7B MHA on 20 GB: ~5 GB usable after weights; BBH seqs ~700 tok, GSM8K ~900, HumanEval ~1500.
-# If the model uses GQA (fewer KV heads), these can be raised safely.
+# Calibrated for Qwen3-4B on 20 GB: GQA with 8 KV heads → ~112 KB/tok (28 layers).
+# Model weights ~8 GB, leaving ~11 GB. All tasks comfortably fit at batch=16.
+# For a 7B MHA model (512 KB/tok, ~14 GB weights, ~5 GB free): halve these values.
 EVAL_BATCH_SIZE: Dict[str, int] = {
-    # BBH — short outputs, seq ≤ 700 tok → batch=8 costs ~2.8 GB KV
-    "dyck_languages": 8,
-    "causal_judgement": 8,
-    "disambiguation_qa": 8,
-    "formal_fallacies": 8,
-    "hyperbaton": 8,
-    "logical_deduction_five_objects": 8,
-    "penguins_in_a_table": 8,
-    "reasoning_about_colored_objects": 8,
-    "web_of_lies": 8,
-    # GSM8K — 512 tok output, seq ~900 → batch=4 costs ~1.8 GB KV
-    "gsm8k": 4,
-    # HumanEval — 1024 tok output, seq ~1500 → batch=2 costs ~1.5 GB KV
-    "humaneval": 2,
+    # BBH — seq ≤ 700 tok → batch=16 costs ~1.2 GB KV
+    "dyck_languages": 16,
+    "causal_judgement": 16,
+    "disambiguation_qa": 16,
+    "formal_fallacies": 16,
+    "hyperbaton": 16,
+    "logical_deduction_five_objects": 16,
+    "penguins_in_a_table": 16,
+    "reasoning_about_colored_objects": 16,
+    "web_of_lies": 16,
+    # GSM8K — seq ~900 tok → batch=16 costs ~1.6 GB KV
+    "gsm8k": 16,
+    # HumanEval — seq ~1500 tok → batch=16 costs ~2.6 GB KV
+    "humaneval": 16,
 }
 
-_DEFAULT_EVAL_BATCH_SIZE = 4
+_DEFAULT_EVAL_BATCH_SIZE = 16
 
 # Dataset configurations
 DATASETS = {
@@ -262,9 +262,15 @@ def run_experiment(
             ds_tasks = tasks if tasks else ds_config["tasks"]
 
             for task in ds_tasks:
-                # Fetch seed prompt (once per task, shared across seeds)
+                # Fetch seed prompt (once per task, shared across seeds).
+                # BBH: use instruction line only (use_full_prompt=False) — the full
+                # CoT file has 3 Q/A examples that create a 4-shot format in the
+                # evaluator prompt and override the JSON system prompt, causing
+                # models to output CoT reasoning instead of the required answer.
+                # Operators add their own few-shot examples via dataset.get_few_shot_examples().
+                use_full = dataset.lower() != "bbh"
                 try:
-                    seed_prompt = get_seed_prompt(dataset, task, use_full_prompt=True)
+                    seed_prompt = get_seed_prompt(dataset, task, use_full_prompt=use_full)
                     logger.info(f"Loaded seed prompt for {dataset}/{task} ({len(seed_prompt)} chars)")
                 except Exception as e:
                     logger.error(f"Failed to load seed prompt for {dataset}/{task}: {e}")

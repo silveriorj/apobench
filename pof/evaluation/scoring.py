@@ -450,6 +450,17 @@ def _extract_cot_answer(text: str) -> Optional[str]:
         if len(candidate) < 100:
             return candidate
 
+    # Pattern: Dyck/bracket sequence — last line that looks like closing brackets.
+    # Catches CoT outputs that end with the answer but lack an "answer is" marker.
+    # A valid dyck answer is one or more bracket tokens (], }, ), >, separated by spaces).
+    bracket_line = re.search(
+        r"^([\]\}\)\>](?:\s+[\]\}\)\>])*)$",
+        text.strip(),
+        re.MULTILINE,
+    )
+    if bracket_line:
+        return bracket_line.group(1).strip()
+
     return None
 
 
