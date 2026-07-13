@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 # Cache directory
 CACHE_DIR = Path(".cache/prompts")
 
-# BBH prompt source (EvoPrompt repo)
+# BBH prompt source (chain-of-thought-hub)
 BBH_PROMPT_BASE_URL = (
-    "https://raw.githubusercontent.com/beeevita/EvoPrompt/main/BBH/lib_prompt"
+    "https://raw.githubusercontent.com/FranxYao/chain-of-thought-hub/main/BBH/lib_prompt"
 )
 
 # GSM8K prompt source (chain-of-thought-hub) — mid CoT: "Let's think step by step" + "The answer is N"

@@ -43,18 +43,20 @@ SEEDS = [42, 123, 7]
 
 # Per-task eval max_new_tokens (eval output only; operator/LLM generation uses
 # llm.max_new_tokens from the YAML, which stays at 512).
-# BBH answers vary: dyck needs bracket sequences (~40 tok), most others are
-# single-word or letter answers (Yes/No, A/B/C, color name).
+# Eval uses _EVAL_SYSTEM_PROMPT which forces {"answer": "..."} JSON — no CoT.
+# dyck bracket sequences: 3-15 brackets → ~30 tok in JSON; 64 gives safe headroom.
+# MCQ/boolean/color tasks: single word/letter → 16 is sufficient.
+# GSM8K/HumanEval use different system prompts that allow CoT/code output.
 EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     # BBH
-    "dyck_languages": 512,
+    "dyck_languages": 64,
     "causal_judgement": 16,
     "disambiguation_qa": 16,
     "formal_fallacies": 16,
     "hyperbaton": 16,
-    "logical_deduction_five_objects": 64,
-    "penguins_in_a_table": 32,
-    "reasoning_about_colored_objects": 64,
+    "logical_deduction_five_objects": 16,
+    "penguins_in_a_table": 16,
+    "reasoning_about_colored_objects": 16,
     "web_of_lies": 16,
     # Other datasets
     "gsm8k": 512,
@@ -74,7 +76,7 @@ DATASETS = {
             # "hyperbaton",
             "dyck_languages",
             "logical_deduction_five_objects",
-            # "penguins_in_a_table",
+            "penguins_in_a_table",
             "reasoning_about_colored_objects",
             # "web_of_lies",
         ],
