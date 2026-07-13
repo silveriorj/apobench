@@ -67,6 +67,7 @@ class DatasetConfig(BaseModel):
     split: str = Field(default="train", description="Dataset split")
     num_samples: int = Field(default=100, description="Number of samples to load")
     num_few_shot: int = Field(default=3, description="Number of few-shot examples")
+    task_type: str = Field(default="", description="Override task_type; empty = auto-detect from data")
 
 
 class RunConfig(BaseModel):

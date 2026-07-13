@@ -256,11 +256,13 @@ class RunOrchestrator:
 
     def _get_evaluator(self, llm: BaseLLM, dataset: TaskDataset) -> Evaluator:
         """Create evaluator instance."""
-        score_fn = create_score_function(dataset.task_type)
+        # Config override takes precedence over dataset auto-detection.
+        task_type = self.config.dataset.task_type or dataset.task_type
+        score_fn = create_score_function(task_type)
         return Evaluator(
             llm=llm,
             score_fn=score_fn,
-            task_type=dataset.task_type,
+            task_type=task_type,
             max_new_tokens=self.config.evaluation.max_new_tokens,
             temperature=self.config.evaluation.temperature,
             batch_size=self.config.evaluation.batch_size,

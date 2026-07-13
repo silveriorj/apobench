@@ -43,13 +43,12 @@ SEEDS = [42, 123, 7]
 
 # Per-task eval max_new_tokens (eval output only; operator/LLM generation uses
 # llm.max_new_tokens from the YAML, which stays at 512).
-# Eval uses _EVAL_SYSTEM_PROMPT which forces {"answer": "..."} JSON — no CoT.
-# dyck bracket sequences: 3-15 brackets → ~30 tok in JSON; 64 gives safe headroom.
+# dyck uses _DYCK_EVAL_SYSTEM_PROMPT (CoT allowed) — needs 200+ tokens for stack sim.
 # MCQ/boolean/color tasks: single word/letter → 16 is sufficient.
 # GSM8K/HumanEval use different system prompts that allow CoT/code output.
 EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     # BBH
-    "dyck_languages": 64,
+    "dyck_languages": 512,  # stack CoT: up to ~30 steps × 12 tok + conclusion ≈ 430 tok
     "causal_judgement": 16,
     "disambiguation_qa": 16,
     "formal_fallacies": 16,
@@ -67,27 +66,33 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
 _DEFAULT_EVAL_MAX_NEW_TOKENS = 32
 
 # Per-task eval batch size.
-# Calibrated for Qwen3-4B on 20 GB: GQA with 8 KV heads → ~112 KB/tok (28 layers).
-# Model weights ~8 GB, leaving ~11 GB. All tasks comfortably fit at batch=16.
-# For a 7B MHA model (512 KB/tok, ~14 GB weights, ~5 GB free): halve these values.
+# Calibrated for DeepSeek-Coder-7B on 20 GB: MHA with 32 KV heads → ~512 KB/tok (32 layers).
+# Model weights ~14 GB, leaving ~5 GB. BBH tasks fit at batch=8; gsm8k at 4; humaneval at 2.
 EVAL_BATCH_SIZE: Dict[str, int] = {
-    # BBH — seq ≤ 700 tok → batch=16 costs ~1.2 GB KV
-    "dyck_languages": 16,
-    "causal_judgement": 16,
-    "disambiguation_qa": 16,
-    "formal_fallacies": 16,
-    "hyperbaton": 16,
-    "logical_deduction_five_objects": 16,
-    "penguins_in_a_table": 16,
-    "reasoning_about_colored_objects": 16,
-    "web_of_lies": 16,
-    # GSM8K — seq ~900 tok → batch=16 costs ~1.6 GB KV
-    "gsm8k": 16,
-    # HumanEval — seq ~1500 tok → batch=16 costs ~2.6 GB KV
-    "humaneval": 16,
+    # BBH — seq ≤ 700 tok → batch=8 costs ~3.5 GB KV
+    "dyck_languages": 8,
+    "causal_judgement": 8,
+    "disambiguation_qa": 8,
+    "formal_fallacies": 8,
+    "hyperbaton": 8,
+    "logical_deduction_five_objects": 8,
+    "penguins_in_a_table": 8,
+    "reasoning_about_colored_objects": 8,
+    "web_of_lies": 8,
+    # GSM8K — seq ~900 tok → batch=4 costs ~1.8 GB KV
+    "gsm8k": 4,
+    # HumanEval — seq ~1500 tok → batch=2 costs ~1.5 GB KV
+    "humaneval": 2,
 }
 
-_DEFAULT_EVAL_BATCH_SIZE = 16
+_DEFAULT_EVAL_BATCH_SIZE = 4
+
+# Per-task evaluator task_type override.
+# Empty string means auto-detect from dataset samples (default for most BBH tasks).
+# "dyck" routes to _DYCK_EVAL_SYSTEM_PROMPT in evaluator.py (brief CoT + bracket answer).
+EVAL_TASK_TYPE: Dict[str, str] = {
+    "dyck_languages": "dyck",
+}
 
 # Dataset configurations
 DATASETS = {
@@ -136,18 +141,19 @@ def build_run_config(
     key = task or dataset
     eval_max_tokens = EVAL_MAX_NEW_TOKENS.get(key, _DEFAULT_EVAL_MAX_NEW_TOKENS)
     eval_batch_size = EVAL_BATCH_SIZE.get(key, _DEFAULT_EVAL_BATCH_SIZE)
+    eval_task_type = EVAL_TASK_TYPE.get(key, "")
     run_dir = f"{output_root}/{method}/{task_label}/seed_{seed}"
     if model_name:
         run_dir = f"{output_root}/{_model_slug(model_name)}/{method}/{task_label}/seed_{seed}"
+    dataset_overrides: Dict[str, Any] = {"name": dataset, "task": task}
+    if eval_task_type:
+        dataset_overrides["task_type"] = eval_task_type
     overrides: Dict[str, Any] = {
         "optimizer": {
             "method": method,
             "seed_prompt": seed_prompt,
         },
-        "dataset": {
-            "name": dataset,
-            "task": task,
-        },
+        "dataset": dataset_overrides,
         "evaluation": {
             "max_new_tokens": eval_max_tokens,
             "batch_size": eval_batch_size,

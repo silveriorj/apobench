@@ -35,6 +35,14 @@ _CODE_EVAL_SYSTEM_PROMPT = (
     "no explanations, no usage examples, no markdown commentary."
 )
 
+# Dyck-n: bracket completion requires stack simulation — allow brief CoT.
+# Scorer extracts the final bracket sequence from the last line or "So the answer is X".
+_DYCK_EVAL_SYSTEM_PROMPT = (
+    "Simulate the bracket stack step by step, then output the closing sequence. "
+    "End with 'So the answer is ' followed by the closing brackets separated by spaces "
+    "(e.g. ] } ])."
+)
+
 
 class Evaluator:
     """Evaluate prompts against task samples with optional racing.
@@ -61,6 +69,7 @@ class Evaluator:
         self.system_prompt = {
             "math": _MATH_EVAL_SYSTEM_PROMPT,
             "code": _CODE_EVAL_SYSTEM_PROMPT,
+            "dyck": _DYCK_EVAL_SYSTEM_PROMPT,
         }.get(task_type, _EVAL_SYSTEM_PROMPT)
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature

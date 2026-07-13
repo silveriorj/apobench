@@ -1,7 +1,7 @@
 # =============================================================================
 # POF Experiment Config: SWIFT & APEX on BBH, GSM8K, HumanEval
 # =============================================================================
-# Model: Qwen/Qwen3-4B-Instruct-2507
+# Model: deepseek-ai/deepseek-coder-7b-instruct-v1.5
 # Eval samples: 44 per optimization step
 # Final test samples: ~112-150 per task (60% of 187-250 BBH examples)
 # CoT: Handled in output (max_new_tokens adjusted per task type)
