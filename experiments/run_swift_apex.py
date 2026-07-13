@@ -47,19 +47,17 @@ SEEDS = [42, 123, 7]
 # MCQ/boolean/color tasks: single word/letter → 16 is sufficient.
 # GSM8K/HumanEval use different system prompts that allow CoT/code output.
 EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
-    # BBH — CoT budgets from chain-of-thought-hub example lengths (chars ÷ 3.5).
-    # causal_judgement / disambiguation_qa / hyperbaton: ~300 tok → 320 with small margin
-    # formal_fallacies: ~582 tok (first-order logic notation) → 512 (slight truncation risk
-    #   on the longest examples, but models rarely match hub verbosity exactly)
+    # BBH — compact one-line CoT: ~5-8 steps × ~10 tok/line + conclusion.
+    # formal_fallacies needs more room for first-order logic notation.
     "dyck_languages": 1024,  # stack CoT: up to ~30 steps × 12 tok + conclusion ≈ 430 tok
-    "causal_judgement": 320,
-    "disambiguation_qa": 320,
-    "formal_fallacies": 512,
-    "hyperbaton": 320,
-    "logical_deduction_five_objects": 320,
-    "penguins_in_a_table": 320,
-    "reasoning_about_colored_objects": 320,
-    "web_of_lies": 320,
+    "causal_judgement": 128,
+    "disambiguation_qa": 128,
+    "formal_fallacies": 256,
+    "hyperbaton": 128,
+    "logical_deduction_five_objects": 128,
+    "penguins_in_a_table": 128,
+    "reasoning_about_colored_objects": 128,
+    "web_of_lies": 128,
     # Other datasets
     "gsm8k": 512,
     "humaneval": 1024,

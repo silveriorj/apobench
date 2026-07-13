@@ -35,12 +35,13 @@ _CODE_EVAL_SYSTEM_PROMPT = (
     "no explanations, no usage examples, no markdown commentary."
 )
 
-# General CoT for BBH tasks: reason step by step, end with "The answer is X".
+# General CoT for BBH tasks: brief one-line reasoning steps, end with "So the answer is X."
+# Mirrors the GSM8K style ("brief one-line calculations") to cap output length.
 # _score_auto extracts the final answer via _extract_cot_answer.
 _COT_EVAL_SYSTEM_PROMPT = (
-    "Think through the problem step by step. "
-    "At the end of your reasoning, write 'The answer is ' followed by your final answer "
-    "(a single word, letter, or short phrase — no additional explanation after it)."
+    "Reason through the problem using brief one-line steps — one thought per line, no prose. "
+    "End with 'So the answer is ' followed by your final answer "
+    "(a single word, letter, or short phrase — nothing after it)."
 )
 
 # Dyck-n: bracket completion requires stack simulation — allow brief CoT.
