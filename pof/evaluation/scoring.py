@@ -419,14 +419,16 @@ def _extract_cot_answer(text: str) -> Optional[str]:
     if not text:
         return None
 
-    # Pattern: "the answer is <answer>" (most common in BBH/GSM8K CoT)
-    match = re.search(
+    # Pattern: "the answer is <answer>" (most common in BBH/GSM8K CoT).
+    # Use the LAST match — models sometimes self-correct ("So the answer is X — wait, no!")
+    # and the final occurrence is the authoritative one.
+    matches = list(re.finditer(
         r"(?:so\s+)?the\s+answer\s+is\s+(.+?)(?:\.|$)",
         text,
         re.IGNORECASE | re.MULTILINE,
-    )
-    if match:
-        return match.group(1).strip()
+    ))
+    if matches:
+        return matches[-1].group(1).strip()
 
     # Pattern: "#### <answer>" (GSM8K format)
     match = re.search(r"####\s*(.+?)$", text, re.MULTILINE)

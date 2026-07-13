@@ -36,11 +36,13 @@ _CODE_EVAL_SYSTEM_PROMPT = (
 )
 
 # Dyck-n: bracket completion requires stack simulation — allow brief CoT.
-# Scorer extracts the final bracket sequence from the last line or "So the answer is X".
+# Force the compact chain-of-thought-hub format (one line per symbol, no markdown)
+# so the simulation fits within the 512-token budget even for 50-symbol inputs.
 _DYCK_EVAL_SYSTEM_PROMPT = (
-    "Simulate the bracket stack step by step, then output the closing sequence. "
-    "End with 'So the answer is ' followed by the closing brackets separated by spaces "
-    "(e.g. ] } ])."
+    "Use compact stack notation, one line per symbol, exactly like the examples "
+    "(e.g. '1: [ ; stack: [ {'). No markdown, no headers, no bullet points. "
+    "After the last symbol write the conclusion and end with "
+    "'So the answer is X' where X is the closing brackets separated by spaces."
 )
 
 

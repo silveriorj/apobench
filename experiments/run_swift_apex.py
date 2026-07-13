@@ -48,7 +48,7 @@ SEEDS = [42, 123, 7]
 # GSM8K/HumanEval use different system prompts that allow CoT/code output.
 EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     # BBH
-    "dyck_languages": 512,  # stack CoT: up to ~30 steps × 12 tok + conclusion ≈ 430 tok
+    "dyck_languages": 1024,  # stack CoT: up to ~30 steps × 12 tok + conclusion ≈ 430 tok
     "causal_judgement": 16,
     "disambiguation_qa": 16,
     "formal_fallacies": 16,
