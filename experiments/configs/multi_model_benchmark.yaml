@@ -27,7 +27,7 @@ llm:
   device: auto
   dtype: auto
   max_new_tokens: 512      # Operator generation tokens (mutation, crossover, EDA)
-  batch_size: 4
+  batch_size: 2            # 8B models leave ~4 GB headroom; long optimizer prompts OOM at 4
   thinking_mode: false
 
 # --- Evaluation Configuration ---
