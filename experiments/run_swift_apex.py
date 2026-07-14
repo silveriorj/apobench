@@ -47,17 +47,16 @@ SEEDS = [42, 123, 7]
 # MCQ/boolean/color tasks: single word/letter → 16 is sufficient.
 # GSM8K/HumanEval use different system prompts that allow CoT/code output.
 EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
-    # BBH — compact one-line CoT: ~5-8 steps × ~10 tok/line + conclusion.
-    # formal_fallacies needs more room for first-order logic notation.
+    # BBH — 32 tokens: sufficient for JSON {"answer": "X"} with no CoT.
     "dyck_languages": 1024,  # stack CoT: up to ~30 steps × 12 tok + conclusion ≈ 430 tok
-    "causal_judgement": 192,
-    "disambiguation_qa": 192,
-    "formal_fallacies": 256,
-    "hyperbaton": 192,
-    "logical_deduction_five_objects": 192,
-    "penguins_in_a_table": 192,
-    "reasoning_about_colored_objects": 192,
-    "web_of_lies": 192,
+    "causal_judgement": 32,
+    "disambiguation_qa": 32,
+    "formal_fallacies": 32,
+    "hyperbaton": 32,
+    "logical_deduction_five_objects": 32,
+    "penguins_in_a_table": 32,
+    "reasoning_about_colored_objects": 32,
+    "web_of_lies": 32,
     # Other datasets
     "gsm8k": 512,
     "humaneval": 1024,
@@ -70,16 +69,16 @@ _DEFAULT_EVAL_MAX_NEW_TOKENS = 32
 # Calibrated for DeepSeek-Coder-7B on 20 GB: MHA with 32 KV heads → ~512 KB/tok (32 layers).
 # Model weights ~14 GB, leaving ~5 GB. BBH tasks fit at batch=8; gsm8k at 4; humaneval at 2.
 EVAL_BATCH_SIZE: Dict[str, int] = {
-    # BBH — batch=1: CoT outputs up to 512 tok on Gemma-9B leave no headroom at batch=2.
-    "dyck_languages": 1,
-    "causal_judgement": 1,
-    "disambiguation_qa": 1,
-    "formal_fallacies": 1,
-    "hyperbaton": 1,
-    "logical_deduction_five_objects": 1,
-    "penguins_in_a_table": 1,
-    "reasoning_about_colored_objects": 1,
-    "web_of_lies": 1,
+    # BBH — batch=8: all three models are ≤4B (~6-8 GB weights), plenty of headroom.
+    "dyck_languages": 8,
+    "causal_judgement": 8,
+    "disambiguation_qa": 8,
+    "formal_fallacies": 8,
+    "hyperbaton": 8,
+    "logical_deduction_five_objects": 8,
+    "penguins_in_a_table": 8,
+    "reasoning_about_colored_objects": 8,
+    "web_of_lies": 8,
     # GSM8K — seq ~900 tok → batch=4 costs ~1.8 GB KV
     "gsm8k": 2,
     # HumanEval — seq ~1500 tok → batch=2 costs ~1.5 GB KV
@@ -101,14 +100,6 @@ _DEFAULT_EVAL_TIME_BUDGET = 7200  # BBH tasks
 # Empty string means auto-detect from dataset samples (default for most BBH tasks).
 # "dyck" routes to _DYCK_EVAL_SYSTEM_PROMPT in evaluator.py (brief CoT + bracket answer).
 EVAL_TASK_TYPE: Dict[str, str] = {
-    "causal_judgement": "cot",
-    "disambiguation_qa": "cot",
-    "formal_fallacies": "cot",
-    "hyperbaton": "cot",
-    "logical_deduction_five_objects": "cot",
-    "penguins_in_a_table": "cot",
-    "reasoning_about_colored_objects": "cot",
-    "web_of_lies": "cot",
     "dyck_languages": "dyck",
 }
 
@@ -286,10 +277,11 @@ def run_experiment(
 
             for task in ds_tasks:
                 # Fetch seed prompt (once per task, shared across seeds).
-                # BBH: use full prompt (instruction + 3 CoT examples) for all tasks.
-                # All BBH tasks now use _COT_EVAL_SYSTEM_PROMPT, so the few-shot
-                # examples are consistent with the expected "So the answer is X" format.
-                use_full = True
+                # BBH: instruction line only — full CoT examples conflict with the
+                # JSON system prompt, causing the model to output reasoning instead
+                # of {"answer": "X"}. Exception: dyck needs its 3 worked examples
+                # to teach the stack-simulation format.
+                use_full = task == "dyck_languages"
                 try:
                     seed_prompt = get_seed_prompt(dataset, task, use_full_prompt=use_full)
                     logger.info(f"Loaded seed prompt for {dataset}/{task} ({len(seed_prompt)} chars)")
