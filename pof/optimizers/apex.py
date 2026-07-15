@@ -49,7 +49,7 @@ class APEXOptimizer(BaseOptimizer):
         dataset,
         evaluator,
         population_size: int = 5,
-        num_iterations: int = 4,
+        num_iterations: int = 10,
         expert_personas: Optional[List[str]] = None,
         candidates_per_operator: int = 2,
         ucb_c: float = 0.5,
