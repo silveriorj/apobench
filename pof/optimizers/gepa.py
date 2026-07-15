@@ -47,7 +47,7 @@ class GEPAOptimizer(BaseOptimizer):
         evaluator,
         population_size: int = 5,
         num_iterations: int = 6,
-        minibatch_size: int = 8,
+        minibatch_size: int = 3,
         **kwargs,
     ):
         super().__init__(
