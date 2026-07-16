@@ -17,9 +17,9 @@
 
 # --- Models for the generalization loop (read by run_swift_apex.py) ---
 models:
-  - meta-llama/Llama-3.1-8B-Instruct
-  - google/gemma-7b-it
-  - Qwen/Qwen3-8B   # text-only; replaces Qwen3-VL-8B (VL config not loadable via AutoModelForCausalLM)
+  - llama-3.2-3b-instruct
+  - google/gemma-3-4b-it
+  - Qwen/Qwen3-4B-Instruct-2507
 
 # --- LLM Configuration (model_name is overridden per run from `models`) ---
 llm:
@@ -47,7 +47,7 @@ optimizer:
   seed_prompt: ""          # Loaded dynamically from prompt repos
 
 # --- Output ---
-output_dir: outputs/multi_model_cot_8bs
+output_dir: outputs/multi_model_cot_4bs
 seed: 42
 verbose: true
 
