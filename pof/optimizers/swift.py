@@ -43,7 +43,7 @@ class SWIFTOptimizer(BaseOptimizer):
 
     name = "swift"
 
-    def __init__(self, llm, dataset, evaluator, population_size: int = 5, **kwargs):
+    def __init__(self, llm, dataset, evaluator, population_size: int = 8, **kwargs):
         super().__init__(
             llm=llm,
             dataset=dataset,

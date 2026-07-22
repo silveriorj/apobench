@@ -66,18 +66,21 @@ class RunOrchestrator:
         optimizer_cls = get_optimizer(self.config.optimizer.method)
 
         # Create optimizer instance
-        # Note: num_iterations is passed via params if needed; some optimizers
-        # (SWIFT, APEX) hardcode their own iteration count.
+        # Note: population_size and num_iterations are only passed when explicitly
+        # overridden away from the schema default; otherwise each optimizer keeps
+        # its own paper-calibrated default (e.g. GAAPO's population_size=8).
         init_kwargs = {
             "llm": llm,
             "dataset": dataset,
             "evaluator": evaluator,
-            "population_size": self.config.optimizer.population_size,
             "seed_prompt": self.config.optimizer.seed_prompt,
             "eval_sample_size": self.config.evaluation.sample_size,
             "output_dir": self.config.output_dir,
             **self.config.optimizer.params,
         }
+        # Only pass population_size if explicitly set (non-default) and not already in params
+        if self.config.optimizer.population_size != 5 and "population_size" not in self.config.optimizer.params:
+            init_kwargs["population_size"] = self.config.optimizer.population_size
         # Only pass num_iterations if explicitly set (non-default) and not already in params
         if self.config.optimizer.num_iterations != 3 and "num_iterations" not in self.config.optimizer.params:
             init_kwargs["num_iterations"] = self.config.optimizer.num_iterations
@@ -179,13 +182,17 @@ class RunOrchestrator:
 
             try:
                 optimizer_cls = get_optimizer(method_name)
+                optimizer_kwargs = {
+                    "llm": llm,
+                    "dataset": dataset,
+                    "evaluator": evaluator,
+                    "seed_prompt": self.config.optimizer.seed_prompt,
+                    "eval_sample_size": self.config.evaluation.sample_size,
+                }
+                if self.config.optimizer.population_size != 5:
+                    optimizer_kwargs["population_size"] = self.config.optimizer.population_size
                 optimizer = optimizer_cls(
-                    llm=llm,
-                    dataset=dataset,
-                    evaluator=evaluator,
-                    population_size=self.config.optimizer.population_size,
-                    seed_prompt=self.config.optimizer.seed_prompt,
-                    eval_sample_size=self.config.evaluation.sample_size,
+                    **optimizer_kwargs,
                     output_dir=self.config.output_dir,
                 )
                 result = optimizer.optimize()

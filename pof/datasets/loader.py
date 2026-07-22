@@ -154,13 +154,15 @@ def load_dataset_by_name(
         return _load_livebench_math(task, num_samples, seed)
     elif name.lower() == "gsm8k":
         return _load_gsm8k(num_samples, seed)
+    elif name.lower() == "svamp":
+        return _load_svamp(num_samples, seed)
     elif name.lower() == "humaneval":
         return _load_humaneval(num_samples, seed)
     elif name.endswith(".json") or Path(name).exists():
         return _load_json(name, num_samples, seed)
     else:
         raise DatasetError(
-            f"Unknown dataset: {name}. Use 'bbh', 'gsm8k', 'livebench_math', or a JSON file path."
+            f"Unknown dataset: {name}. Use 'bbh', 'gsm8k', 'svamp', 'livebench_math', or a JSON file path."
         )
 
 
@@ -356,6 +358,61 @@ def _load_gsm8k(num_samples: int, seed: int) -> TaskDataset:
         test_samples=test,
         task_type="math",
         metadata={"source": "openai/gsm8k"},
+    )
+
+
+def _load_svamp(num_samples: int, seed: int) -> TaskDataset:
+    """Load SVAMP (HF: ChilleD/SVAMP) — 1-2 step arithmetic word problems.
+
+    A faster, simpler complement to GSM8K (2-8 reasoning steps): shorter
+    questions and shorter chains of thought, so both generation and
+    evaluation are cheaper per sample. HF train split (700) feeds few-shot
+    examples; HF test split (300) is shuffled then split into test (115)
+    and dev (rest). Targets are plain numeric strings (int-formatted when
+    whole), matching GSM8K's '#### N' convention so the shared 'math'
+    scorer (_score_math) needs no changes.
+    """
+    try:
+        from datasets import load_dataset as hf_load_dataset
+    except ImportError:
+        raise DatasetError("'datasets' package required. Run: pip install datasets")
+
+    try:
+        hf_train = hf_load_dataset("ChilleD/SVAMP", split="train")
+        hf_test = hf_load_dataset("ChilleD/SVAMP", split="test")
+    except Exception as e:
+        raise DatasetError(f"Failed to load ChilleD/SVAMP: {e}") from e
+
+    def _format_answer(value) -> str:
+        num = float(value)
+        return str(int(num)) if num.is_integer() else str(num)
+
+    rng = random.Random(seed)
+    train_indices = rng.sample(range(len(hf_train)), min(8, len(hf_train)))
+    train_samples = [
+        {"input": hf_train[i]["question_concat"], "target": _format_answer(hf_train[i]["Answer"])}
+        for i in train_indices
+    ]
+
+    test_samples_raw = [
+        {"input": item["question_concat"], "target": _format_answer(item["Answer"])}
+        for item in hf_test
+    ]
+    rng.shuffle(test_samples_raw)
+
+    n_test = min(115, max(1, len(test_samples_raw) - 50))
+    test = test_samples_raw[:n_test]
+    dev = test_samples_raw[n_test:]
+
+    logger.info(f"SVAMP loaded: {len(train_samples)} train, {len(dev)} dev, {len(test)} test")
+
+    return TaskDataset(
+        name="svamp",
+        train_samples=train_samples,
+        dev_samples=dev,
+        test_samples=test,
+        task_type="math",
+        metadata={"source": "ChilleD/SVAMP"},
     )
 
 

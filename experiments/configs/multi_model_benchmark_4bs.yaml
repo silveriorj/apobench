@@ -4,20 +4,14 @@
 # Tests whether optimizer rankings generalize across model scale and family:
 #   3 models × 4 BBH tasks × 5 methods × 3 seeds = 180 runs
 #
-# Models span two families and three sizes (all ungated on HF Hub):
-#   - Qwen/Qwen3-0.6B                  (small, same as main benchmark)
-#   - Qwen/Qwen3-1.7B                  (mid-size, same family)
-#   - microsoft/Phi-4-mini-instruct    (3.8B, different family)
-# Swap for Qwen/Qwen3-4B-Instruct-2507 if you prefer a within-family scale test.
-#
 # Usage:
-#   python experiments/run_swift_apex.py --config experiments/configs/multi_model_benchmark.yaml
+#   python experiments/run_swift_apex.py --config experiments/configs/multi_model_benchmark_4bs.yaml
 #   (the runner reads the `models:` list below and loops over it)
 # =============================================================================
 
 # --- Models for the generalization loop (read by run_swift_apex.py) ---
 models:
-  - meta-llama/Llama-3.2-3B-Instruct
+  - microsoft/Phi-4-mini-instruct
   - google/gemma-3-4b-it
   - Qwen/Qwen3-4B-Instruct-2507
 
@@ -27,7 +21,7 @@ llm:
   device: auto
   dtype: auto
   max_new_tokens: 512      # Operator generation tokens (mutation, crossover, EDA)
-  batch_size: 2            # 8B models leave ~4 GB headroom; long optimizer prompts OOM at 4
+  batch_size: 2
   thinking_mode: false
 
 # --- Evaluation Configuration ---
@@ -43,11 +37,10 @@ evaluation:
 
 # --- Optimizer Configuration (defaults, overridden per-run) ---
 optimizer:
-  population_size: 5
   seed_prompt: ""          # Loaded dynamically from prompt repos
 
 # --- Output ---
-output_dir: outputs/multi_model_cot_4bs
+output_dir: outputs/multi_model_4bs
 seed: 42
 verbose: true
 

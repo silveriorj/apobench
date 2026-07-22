@@ -1,4 +1,4 @@
-"""Experiment runner: SWIFT & APEX on BBH, GSM8K, HumanEval.
+"""Experiment runner: SWIFT & APEX on BBH, SVAMP, HumanEval.
 
 Iterates over the experiment matrix defined in the config, fetching seed prompts
 from the appropriate repositories and running each method/task combination.
@@ -45,7 +45,7 @@ SEEDS = [42, 123, 7]
 # llm.max_new_tokens from the YAML, which stays at 512).
 # dyck uses _DYCK_EVAL_SYSTEM_PROMPT (CoT allowed) — needs 200+ tokens for stack sim.
 # MCQ/boolean/color tasks: single word/letter → 16 is sufficient.
-# GSM8K/HumanEval use different system prompts that allow CoT/code output.
+# SVAMP/HumanEval use different system prompts that allow CoT/code output.
 EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     # BBH — 32 tokens: sufficient for JSON {"answer": "X"} with no CoT.
     "dyck_languages": 1024,  # stack CoT: up to ~30 steps × 12 tok + conclusion ≈ 430 tok
@@ -58,8 +58,10 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     "reasoning_about_colored_objects": 32,
     "web_of_lies": 32,
     # Other datasets
-    "gsm8k": 512,
-    "humaneval": 1024,
+    "svamp": 256,  # 1-2 step arithmetic CoT: much shorter than GSM8K's 512
+    "gsm8k": 512,  # kept for reference/opt-in; not in the default DATASETS matrix
+    "humaneval": 768,  # empirically: truncated completions are never correct (0/28 at 1024 cap);
+                       # 768 loses only 5/1725 correct Qwen3-4B answers vs 1024, 0 for Llama/Gemma
 }
 
 # Default fallback when task is not listed above
@@ -79,7 +81,9 @@ EVAL_BATCH_SIZE: Dict[str, int] = {
     "penguins_in_a_table": 2,
     "reasoning_about_colored_objects": 2,
     "web_of_lies": 2,
-    # GSM8K — seq ~900 tok → batch=4 costs ~1.8 GB KV
+    # SVAMP — short 1-2 step CoT, seq well under GSM8K's ~900 tok → batch=2 is safe
+    "svamp": 2,
+    # GSM8K — seq ~900 tok → batch=4 costs ~1.8 GB KV (kept for reference; not in default matrix)
     "gsm8k": 1,
     # HumanEval — seq ~1500 tok → batch=2 costs ~1.5 GB KV
     "humaneval": 1,
@@ -88,10 +92,11 @@ EVAL_BATCH_SIZE: Dict[str, int] = {
 _DEFAULT_EVAL_BATCH_SIZE = 4
 
 # Per-task wall-clock budget (seconds).
-# GSM8K and HumanEval get 7200s so that slower methods (GAAPO, SEE) hit the cap
+# SVAMP and HumanEval get 7200s so that slower methods (GAAPO, SEE) hit the cap
 # and their scores are recorded as lower bounds, making SWIFT/APEX cuts visible.
 EVAL_TIME_BUDGET: Dict[str, int] = {
-    "gsm8k": 7200,
+    "svamp": 7200,
+    "gsm8k": 7200,  # kept for reference; not in default matrix
     "humaneval": 7200,
 }
 _DEFAULT_EVAL_TIME_BUDGET = 7200  # BBH tasks
@@ -111,11 +116,15 @@ DATASETS = {
             "disambiguation_qa",
             "formal_fallacies",
             "hyperbaton",
+            "logical_deduction_five_objects",
+            "penguins_in_a_table",
+            "reasoning_about_colored_objects",
+            "web_of_lies",
         ],
         "task_type": "auto",
     },
-    "gsm8k": {
-        "tasks": [""],  # Single split (test set, 1319 problems)
+    "svamp": {
+        "tasks": [""],  # Single split (test set, 300 problems)
         "task_type": "math",
     },
     "humaneval": {
@@ -427,11 +436,11 @@ def main():
     )
     parser.add_argument(
         "--datasets", nargs="+", default=None,
-        help="Datasets to run (default: bbh gsm8k humaneval)",
+        help="Datasets to run (default: bbh svamp humaneval)",
     )
     parser.add_argument(
         "--tasks", nargs="+", default=None,
-        help="Specific BBH tasks to run (default: all 7)",
+        help="Specific BBH tasks to run (default: all 8 in DATASETS['bbh']['tasks'])",
     )
     parser.add_argument(
         "--config", type=str, default="experiments/configs/swift_apex_benchmark.yaml",
