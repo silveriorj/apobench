@@ -85,7 +85,8 @@ class HuggingFaceLLM(BaseLLM):
 
             self._model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
-                dtype=self._dtype,
+                torch_dtype=self._dtype,  # `dtype=` only exists from transformers>=4.56;
+                                           # we're pinned to <4.54 for Phi-4-mini compatibility
                 device_map=self._device if self._device == "auto" else None,
                 trust_remote_code=True,
             )

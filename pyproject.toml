@@ -14,7 +14,8 @@ authors = [
 ]
 dependencies = [
     "torch>=2.0",
-    "transformers>=4.51",
+    "transformers>=4.51,<4.54",  # >=4.51 for native Qwen3 support; <4.54 because Phi-4-mini-instruct's
+                                  # bundled remote code imports transformers.utils.LossKwargs, removed in 4.54
     "numpy>=1.24",
     "pydantic>=2.0",
     "pyyaml>=6.0",

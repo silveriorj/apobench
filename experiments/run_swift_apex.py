@@ -49,12 +49,13 @@ SEEDS = [42, 123, 7]
 EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     # BBH — 32 tokens: sufficient for JSON {"answer": "X"} with no CoT.
     "dyck_languages": 1024,  # stack CoT: up to ~30 steps × 12 tok + conclusion ≈ 430 tok
+    "boolean_expressions": 32,
     "causal_judgement": 32,
     "disambiguation_qa": 32,
     "formal_fallacies": 32,
     "hyperbaton": 32,
     "logical_deduction_five_objects": 32,
-    "penguins_in_a_table": 32,
+    "penguins_in_a_table": 32,  # kept for reference; not in the default matrix
     "reasoning_about_colored_objects": 32,
     "web_of_lies": 32,
     # Other datasets
@@ -73,12 +74,13 @@ _DEFAULT_EVAL_MAX_NEW_TOKENS = 32
 EVAL_BATCH_SIZE: Dict[str, int] = {
     # BBH — batch=4: calibrated for 8B models (~16 GB weights, ~4 GB headroom on 20 GB).
     "dyck_languages": 2,
+    "boolean_expressions": 2,
     "causal_judgement": 2,
     "disambiguation_qa": 2,
     "formal_fallacies": 2,
     "hyperbaton": 2,
     "logical_deduction_five_objects": 2,
-    "penguins_in_a_table": 2,
+    "penguins_in_a_table": 2,  # kept for reference; not in the default matrix
     "reasoning_about_colored_objects": 2,
     "web_of_lies": 2,
     # SVAMP — short 1-2 step CoT, seq well under GSM8K's ~900 tok → batch=2 is safe
@@ -112,12 +114,12 @@ EVAL_TASK_TYPE: Dict[str, str] = {
 DATASETS = {
     "bbh": {
         "tasks": [
+            "boolean_expressions",
             "causal_judgement",
             "disambiguation_qa",
             "formal_fallacies",
             "hyperbaton",
             "logical_deduction_five_objects",
-            "penguins_in_a_table",
             "reasoning_about_colored_objects",
             "web_of_lies",
         ],
