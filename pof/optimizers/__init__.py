@@ -41,7 +41,9 @@ def _load_all():
     """Import all optimizer modules to trigger registration."""
     from pof.optimizers import see  # noqa: F401
     from pof.optimizers import swift  # noqa: F401
+    from pof.optimizers import swift_v2  # noqa: F401
     from pof.optimizers import apex  # noqa: F401
+    from pof.optimizers import apex_v2  # noqa: F401
     from pof.optimizers import gaapo  # noqa: F401
     from pof.optimizers import capo  # noqa: F401
     from pof.optimizers import gepa  # noqa: F401
