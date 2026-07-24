@@ -93,6 +93,15 @@ class HuggingFaceLLM(BaseLLM):
             if self._device != "auto":
                 self._model = self._model.to(self._device)
             self._model.eval()
+
+            # Some architectures (e.g. Gemma3) default generation_config.cache_implementation
+            # to "hybrid", which routes generate() through a torch.compile'd forward pass with
+            # one_graph=True. Every call here has a differently-shaped prompt, so it recompiles
+            # on nearly every generation and eventually hits FailOnRecompileLimitHit. Force the
+            # plain dynamic cache so generation stays eager.
+            if getattr(self._model.generation_config, "cache_implementation", None) is not None:
+                self._model.generation_config.cache_implementation = None
+
             logger.info(f"Model loaded successfully: {self.model_name}")
         except Exception as e:
             raise LLMError(f"Failed to load model {self.model_name}: {e}") from e
