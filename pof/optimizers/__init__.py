@@ -49,6 +49,7 @@ def _load_all():
     from pof.optimizers import gepa  # noqa: F401
     from pof.optimizers import gspe  # noqa: F401
     from pof.optimizers import funnel  # noqa: F401
+    from pof.optimizers import funnel_v2  # noqa: F401
 
 
 __all__ = ["BaseOptimizer", "get_optimizer", "list_optimizers", "register_optimizer"]

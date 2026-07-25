@@ -56,10 +56,17 @@ def scan_technique_stats(
     output_dir: str,
     method_name: str = "funnel",
     technique_names: Optional[Set[str]] = None,
+    task_filter: Optional[str] = None,
 ) -> Dict[str, TechniqueStats]:
     """Aggregate per-technique dev scores from every prior audit trail found
     under this experiment's FUNNEL history root. Returns {} if no history
     root exists yet (first-ever run of the method in this experiment).
+
+    `task_filter` restricts the scan to prior runs of the SAME task (matched
+    against the run's directory path). This turns the warm-started priors into
+    per-task operator routing: an operator that works on logic tasks and not on
+    semantic ones is not averaged into a single misleading global mean.
+    Unfiltered (None) pools every task, which is the v1 behavior.
     """
     root = find_history_root(output_dir, method_name)
     if root is None:
@@ -68,6 +75,8 @@ def scan_technique_stats(
     scores: Dict[str, List[float]] = {}
     pattern = str(root / "**" / f"audit_{method_name}_*.json")
     for audit_path in glob.glob(pattern, recursive=True):
+        if task_filter and task_filter not in Path(audit_path).as_posix():
+            continue
         audit = _load_json(audit_path)
         if not audit:
             continue
