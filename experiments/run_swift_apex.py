@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 METHODS = ["swift", "apex", "capo", "gaapo", "see", "gepa",
-           "swift_v2", "apex_v2"]  # Methods to run
+           "swift_v2", "apex_v2", "funnel"]  # Methods to run
 
 # Random seeds for statistical robustness (3 runs per configuration)
 SEEDS = [42, 123, 7]
