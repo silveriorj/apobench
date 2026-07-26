@@ -102,6 +102,31 @@ class HuggingFaceLLM(BaseLLM):
             if getattr(self._model.generation_config, "cache_implementation", None) is not None:
                 self._model.generation_config.cache_implementation = None
 
+            # Most checkpoints ship sampling defaults (temperature/top_p/top_k) in
+            # their generation_config. Evaluation runs greedily, so we drop those
+            # keys from gen_kwargs — but the model-level values remain set, and
+            # GenerationConfig.validate() then warns "generation flags are not
+            # valid and may be ignored" on EVERY greedy call, which at 50+ evals
+            # per candidate floods the logs and hides real errors. Resetting them
+            # to the library defaults silences it at the source: validate()
+            # compares against exactly these values. Sampling still works because
+            # operator calls pass temperature/top_p/top_k explicitly per call.
+            # Values below are the exact defaults GenerationConfig.validate()
+            # compares against in its `do_sample is False` branch (transformers
+            # 4.53 generation/configuration_utils.py:649-673), so matching them
+            # removes the flags from `minor_issues` rather than muting a logger.
+            _greedy_safe_defaults = (
+                ("temperature", 1.0), ("top_p", 1.0), ("top_k", 50),
+                ("min_p", None), ("typical_p", 1.0),
+                ("epsilon_cutoff", 0.0), ("eta_cutoff", 0.0),
+            )
+            for param, default in _greedy_safe_defaults:
+                try:
+                    if getattr(self._model.generation_config, param, default) != default:
+                        setattr(self._model.generation_config, param, default)
+                except Exception:  # noqa: BLE001 - never block loading over a log tweak
+                    pass
+
             logger.info(f"Model loaded successfully: {self.model_name}")
         except Exception as e:
             raise LLMError(f"Failed to load model {self.model_name}: {e}") from e
