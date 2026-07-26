@@ -114,9 +114,35 @@ assert all(t in _ALL_TECHNIQUE_FNS for t in FUNNEL_V2_POOL), (
 # the eight heavy operators no-op when the elite has no failures, collapsing the
 # pool to its cheap tier exactly when budget is most available. Starting at 0.30
 # keeps early scores off the ceiling.
-# Evaluation uses a FLAT sample size, equal to `eval_sample_size` (50 by
-# default, set from `evaluation.sample_size` in the run config) — the same
-# value every other method in the benchmark uses.
+# --- Accumulating-fresh validation ---------------------------------------
+#
+# Phase k evaluates on a GROWING prefix of the optimization pool, so every
+# phase adds validation instances the search has never been selected against.
+#
+# This replaces a flat N=50, which evaluated every phase on the SAME 50
+# instances. Under that scheme a candidate surviving four phases had been
+# selected four times against one fixed sample — four rounds of overfitting
+# pressure on the same examples. The measured consequence, over 17 runs:
+#
+#   mean dev gain            +0.065   (search works: 62% of it from the phases)
+#   mean test gain           ~0.000
+#   corr(dev gain, test)     -0.695   <- runs improving most on dev did WORST
+#
+# SWIFT/APEX already guard against this by resampling a fresh minibatch every
+# phase ("because the minibatch is fresh each time, selection never overfits a
+# fixed subset"). The fixed prefix introduced here to make candidate scores
+# comparable at equal N silently removed that property; this restores it while
+# keeping comparability, because a growing prefix is still nested — all
+# candidates in a phase are scored on identical instances, and a survivor pays
+# only for the newly added ones.
+#
+# Fractions are of the optimization pool, not of dev: the held-out selection
+# slice stays untouched by the search either way.
+PHASE_N_FRACTIONS: List[float] = [0.25, 0.50, 0.75, 1.0]
+
+# Superseded note, kept because the reasoning still constrains the design:
+# a flat N equal to `eval_sample_size` (50) matched every other method in the
+# benchmark exactly, which is why it was chosen.
 #
 # An earlier design scaled N across phases (38/57/76/95 on a 127-example dev
 # split), on the successive-halving argument that precision matters most at the
@@ -314,7 +340,8 @@ class FUNNELv2Optimizer(BaseOptimizer):
         )
         logger.info(
             f"[{self.name}] dev={n_dev} -> optimization pool={len(self._dev_pool)}, "
-            f"held-out selection slice={len(self._holdout)}"
+            f"held-out selection slice={len(self._holdout)}; "
+            f"accumulating phase N={self._phase_sizes}"
         )
         logger.info(
             f"[FUNNELv2] dev pool={len(pool)}; flat eval N={self._phase_sizes[0]} "
@@ -360,13 +387,22 @@ class FUNNELv2Optimizer(BaseOptimizer):
 
     @staticmethod
     def _compute_phase_sizes(dev_size: int, eval_sample_size: int, n_phases: int = 4) -> List[int]:
-        """Flat schedule: every phase evaluates on the same sample size.
+        """Growing schedule: each phase adds validation instances not yet used.
 
-        Clamped to the dev split, which for BBH holds only 64-127 examples, so
-        a configured 50 is reachable on every task.
+        `dev_size` here is the OPTIMIZATION pool (dev minus the held-out slice).
+        Sizes are a nested, non-decreasing prefix of it, so within any phase all
+        candidates are scored on identical instances while each phase widens the
+        evidence base. Floored at MIN_PHASE_N and clamped to the pool, which for
+        small BBH dev splits can collapse several early phases to the same size —
+        acceptable, since the floor exists to stop early phases saturating.
         """
-        n = min(max(MIN_PHASE_N, eval_sample_size), dev_size)
-        return [n] * n_phases
+        fracs = PHASE_N_FRACTIONS[:n_phases] or [1.0]
+        while len(fracs) < n_phases:
+            fracs.append(1.0)
+        sizes = [min(dev_size, max(MIN_PHASE_N, int(round(dev_size * f)))) for f in fracs]
+        for i in range(1, len(sizes)):
+            sizes[i] = max(sizes[i], sizes[i - 1])
+        return sizes
 
     def _phase_samples(self, phase: int) -> List[Dict[str, str]]:
         n = self._phase_sizes[min(phase, len(self._phase_sizes) - 1)]
