@@ -241,26 +241,74 @@ class FUNNELv2Optimizer(BaseOptimizer):
         return em - self.barrier_lambda * (excess ** 3)
 
     def _evaluate_phase(self, candidates: List[PromptRecord], phase: int) -> None:
-        """Evaluate on this phase's nested sample; store raw EM and penalized score."""
-        samples = self._phase_samples(phase)
-        to_eval = [r for r in candidates if r.score == 0.0 and r.text]
-        for record in to_eval:
-            result = self.evaluator.evaluate(record.text, samples)
-            mean_len = self._mean_output_tokens(result.per_sample_details)
-            penalized = self._barrier_score(result.score, mean_len)
+        """Bring EVERY candidate up to this phase's sample size, then rescore.
 
-            record.performance_vector = result.performance_vector
-            record.per_sample_details = result.per_sample_details
-            record.scores["dev"] = result.score          # raw EM, for analysis
-            record.scores["gate_score"] = penalized      # what selection uses
+        Selection compares candidates against each other, so they must all be
+        measured on the SAME sample. Carrying a survivor's earlier small-N score
+        forward would bias selection toward incumbents: small samples have
+        higher variance, and a survivor was *selected for scoring high*, so its
+        small-N estimate is upward-biased (winner's curse). Ranking that
+        inflated estimate against an honest larger-N estimate of a new candidate
+        systematically favours the incumbent, and the population ossifies around
+        whichever candidates got lucky early.
+
+        Standard successive halving avoids this by re-running survivors at each
+        new budget. Because our phase samples are nested prefixes of one pool, a
+        survivor only needs the INCREMENT evaluated — its cached per-sample
+        results for the prefix stay valid — so correctness here costs only the
+        extra samples, not a full re-evaluation.
+        """
+        n_target = self._phase_sizes[min(phase, len(self._phase_sizes) - 1)]
+        n_full, n_incr, n_cached = 0, 0, 0
+
+        for record in candidates:
+            if not record.text:
+                continue
+            cached = list(record.per_sample_details or [])
+            have = len(cached)
+
+            if have >= n_target:
+                details = cached[:n_target]      # already deep enough
+                n_cached += 1
+            else:
+                increment = self._dev_pool[have:n_target]
+                if not increment:
+                    continue
+                res = self.evaluator.evaluate(record.text, increment)
+                details = cached + list(res.per_sample_details)
+                if have == 0:
+                    n_full += 1
+                else:
+                    n_incr += 1
+
+            em = sum(1.0 for d in details if d.get("correct")) / max(len(details), 1)
+            mean_len = self._mean_output_tokens(details)
+            penalized = self._barrier_score(em, mean_len)
+
+            record.per_sample_details = details
+            record.performance_vector = [1.0 if d.get("correct") else 0.0 for d in details]
+            record.scores["dev"] = em                # raw EM, for analysis
+            record.scores["gate_score"] = penalized  # what selection uses
             record.scores["out_len"] = mean_len
-            record.scores["eval_n"] = float(len(samples))
+            record.scores["eval_n"] = float(len(details))
             record.score = max(0.0, penalized)
-        if to_eval:
-            logger.info(
-                f"[FUNNELv2 Phase {phase}] evaluated {len(to_eval)} candidates "
-                f"on N={len(samples)}"
-            )
+
+        logger.info(
+            f"[FUNNELv2 Phase {phase}] all candidates at N={n_target} "
+            f"({n_full} full, {n_incr} incremental, {n_cached} cached)"
+        )
+
+    def _evaluate_population(self, population: List[PromptRecord]) -> None:
+        """Route the base class's evaluation through the phase-aware path.
+
+        `BaseOptimizer.optimize` calls `_evaluate_population` immediately after
+        `_init_population`. The base implementation evaluates on
+        `self.eval_sample_size` samples drawn independently of our nested pool,
+        which would overwrite `per_sample_details` with a vector that no longer
+        aligns to `_dev_pool` prefixes and silently corrupt every subsequent
+        incremental evaluation.
+        """
+        self._evaluate_phase(population, phase=self._phase_idx)
 
     # --- trap-task detection ---
 
@@ -379,8 +427,15 @@ class FUNNELv2Optimizer(BaseOptimizer):
                 f"arm(s): {', '.join(skipped)}"
             )
 
-        new_candidates = [c for c in candidates if c.score == 0.0]
-        self._evaluate_phase(new_candidates, phase=self._phase_idx)
+        # Identify freshly-generated candidates BEFORE evaluating: afterwards
+        # every candidate carries per-sample details and is indistinguishable.
+        # Only fresh ones feed the bandit, so an incumbent is not re-credited to
+        # its operator once per phase it survives.
+        new_candidates = [c for c in candidates if not c.per_sample_details]
+
+        # Evaluate ALL candidates, not just the new ones, so survivors and
+        # newcomers are ranked on the same sample size (see `_evaluate_phase`).
+        self._evaluate_phase(candidates, phase=self._phase_idx)
 
         for record in new_candidates:
             self._operator_scores.setdefault(record.operator, []).append(record.score)
