@@ -138,6 +138,9 @@ assert all(t in _ALL_TECHNIQUE_FNS for t in FUNNEL_V2_POOL), (
 # because it still guarantees every candidate is scored on an identical sample.
 MIN_PHASE_N = 16
 
+# Minimum size of the held-out selection slice (see __init__).
+MIN_HOLDOUT_N = 12
+
 # How many top-scoring records to verify at the final N before reporting a
 # winner (see `_finalize`). Under a flat schedule this is normally a no-op; it
 # remains as a guard against any record entering the ranking under-evaluated.
@@ -183,7 +186,7 @@ class FUNNELv2Optimizer(BaseOptimizer):
         made = 0
         for name in self.STATIC_ARMS:
             fn = _ALL_TECHNIQUE_FNS[name]
-            for elite in self.population:
+            for elite in self.population[: self.static_top_k]:
                 self._forced_elite = elite
                 try:
                     text = fn(self)
@@ -196,7 +199,7 @@ class FUNNELv2Optimizer(BaseOptimizer):
                     made += 1
         logger.info(
             f"[{self.name} Phase {self._phase_idx}] static core produced "
-            f"{made} candidate(s) across {len(self.population)} elites"
+            f"{made} candidate(s) across {len(self.population[: self.static_top_k])} elites"
         )
         return made
 
@@ -208,7 +211,7 @@ class FUNNELv2Optimizer(BaseOptimizer):
         population_size: int = 5,
         num_iterations: int = 4,
         candidates_per_operator: int = 2,
-        top_m_operators: int = 8,
+        top_m_operators: int = 6,
         ucb_c: float = 0.5,
         prior_pulls: int = 3,
         min_n_for_pruning: int = 40,
@@ -216,6 +219,7 @@ class FUNNELv2Optimizer(BaseOptimizer):
         barrier_lambda: float = 0.05,
         length_free_tokens: int = 15,
         length_cap_tokens: Optional[int] = None,
+        static_top_k: int = 3,
         trap_alpha: float = 0.05,
         output_dir: str = "outputs",
         **kwargs,
@@ -235,15 +239,45 @@ class FUNNELv2Optimizer(BaseOptimizer):
         self.barrier_lambda = barrier_lambda
         self.length_free_tokens = length_free_tokens
         self.length_cap_tokens = length_cap_tokens or getattr(evaluator, "max_new_tokens", 32)
+        self.static_top_k = static_top_k
         self.trap_alpha = trap_alpha
 
         # Nested dev pool: one deterministic shuffle, phases take prefixes.
         full_dev = dataset.get_eval_samples("dev", n=None)
         pool = list(full_dev)
         random.Random(42).shuffle(pool)
-        self._dev_pool: List[Dict[str, str]] = pool
+
+        # Split dev into an OPTIMIZATION pool and a HELD-OUT selection slice.
+        #
+        # Measured motivation: with a flat N=50 and ~70 candidates competing,
+        # the argmax over dev reliably picks whichever prompt was luckiest on
+        # those particular 50 instances. On bbh_boolean_expressions this
+        # produced dev 0.927 +/- 0.025 but test 0.838 +/- 0.062, with a dev-test
+        # correlation of -0.46: the seed scoring HIGHEST on dev scored LOWEST on
+        # test. That is the optimizer's curse, and it worsens as the operator
+        # pool grows, because more candidates means more draws in the lottery.
+        #
+        # The held-out slice never influences the search, so the final choice
+        # among a handful of finalists is made on evidence the search could not
+        # overfit. Selection bias scales with how many things you choose
+        # between: best-of-70 on a reused sample is badly biased, best-of-6 on
+        # fresh instances is not.
+        n_dev = len(pool)
+        n_opt = max(
+            MIN_PHASE_N,
+            min(n_dev - MIN_HOLDOUT_N, max(self.eval_sample_size, int(0.70 * n_dev))),
+        )
+        n_opt = min(n_opt, n_dev)
+        self._dev_pool: List[Dict[str, str]] = pool[:n_opt]
+        self._holdout: List[Dict[str, str]] = pool[n_opt:]
+        self._holdout_winner: Optional[PromptRecord] = None
+
         self._phase_sizes = self._compute_phase_sizes(
-            len(pool), self.eval_sample_size, n_phases=max(1, num_iterations)
+            len(self._dev_pool), self.eval_sample_size, n_phases=max(1, num_iterations)
+        )
+        logger.info(
+            f"[{self.name}] dev={n_dev} -> optimization pool={len(self._dev_pool)}, "
+            f"held-out selection slice={len(self._holdout)}"
         )
         logger.info(
             f"[FUNNELv2] dev pool={len(pool)}; flat eval N={self._phase_sizes[0]} "
@@ -559,10 +593,65 @@ class FUNNELv2Optimizer(BaseOptimizer):
             if not under:
                 break
             logger.info(
-                f"[FUNNELv2 finalize] verifying {len(under)} under-evaluated "
+                f"[{self.name} finalize] verifying {len(under)} under-evaluated "
                 f"contender(s) at N={n_final}"
             )
             self._evaluate_phase(under, phase=len(self._phase_sizes) - 1)
+
+        self._select_on_holdout()
+
+    def _select_on_holdout(self) -> None:
+        """Pick the reported winner on data the search never saw.
+
+        The optimization pool drove every selection decision, so the argmax over
+        it is upward-biased by however many candidates competed — measured at
+        dev 0.927 +/- 0.025 against test 0.838 +/- 0.062, correlation -0.46.
+        Re-ranking a handful of finalists on the held-out slice cuts that bias
+        to best-of-K on fresh instances.
+
+        The winner is recorded on the optimizer rather than by rewriting scores:
+        `AuditHistory.get_best_record` ranks by `record.score`, and mutating
+        scores to force an outcome would corrupt the audit trail and the
+        cross-run operator statistics derived from it. `optimize` applies the
+        choice to the returned result instead.
+        """
+        if not self._holdout:
+            return
+        contenders = sorted(
+            self.tracker.history.records.values(),
+            key=lambda r: r.score, reverse=True,
+        )[:FINALIZE_TOP_K]
+        contenders = [r for r in contenders if r.text]
+        if not contenders:
+            return
+
+        for record in contenders:
+            res = self.evaluator.evaluate(record.text, self._holdout)
+            record.scores["holdout"] = res.score
+            record.scores["holdout_n"] = float(len(self._holdout))
+
+        winner = max(contenders, key=lambda r: r.scores.get("holdout", 0.0))
+        self._holdout_winner = winner
+        opt_best = contenders[0]
+        note = (
+            f"holdout selection over {len(contenders)} finalists on "
+            f"{len(self._holdout)} held-out instances: winner holdout="
+            f"{winner.scores.get('holdout', 0.0):.3f} (opt-pool={winner.scores.get('dev', 0.0):.3f}); "
+            f"opt-pool argmax would have picked holdout="
+            f"{opt_best.scores.get('holdout', 0.0):.3f} (opt-pool={opt_best.scores.get('dev', 0.0):.3f})"
+            + ("" if winner is opt_best else " -- DIFFERENT prompt chosen")
+        )
+        logger.info(f"[{self.name}] {note}")
+        self.tracker.add_note(note)
+
+    def optimize(self):
+        """Run the search, then report the held-out winner if one was chosen."""
+        result = super().optimize()
+        winner = self._holdout_winner
+        if winner is not None and winner.text:
+            result.best_prompt = winner.text
+            result.best_score = winner.scores.get("dev", winner.score)
+        return result
 
     def _select_operators(self) -> List[str]:
         """Full UCB1 ranking of the active pool (same formula as APEX/FUNNEL v1).
