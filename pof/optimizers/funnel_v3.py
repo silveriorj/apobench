@@ -52,7 +52,7 @@ from typing import List, Optional
 
 from pof.optimizers import register_optimizer
 from pof.core.types import PromptRecord
-from pof.optimizers.base import _GENERATE_SYSTEM_PROMPT
+from pof.optimizers.base import _GENERATE_SYSTEM_PROMPT, format_exemplar
 from pof.optimizers._funnel_parts import (
     PART_WRITER, extract_written, render, split_raw,
 )
@@ -100,10 +100,10 @@ def _strip_examples(text: str) -> str:
     return re.split(r"\n\n" + _EXAMPLES_MARKER, text)[0].rstrip()
 
 
-def _render_shots(base: str, shots: List[dict]) -> Optional[str]:
+def _render_shots(opt, base: str, shots: List[dict]) -> Optional[str]:
     if not shots:
         return None
-    body = "\n\n".join(f"Input: {s['input']}\nOutput: {s['target']}" for s in shots)
+    body = "\n\n".join(format_exemplar(opt.evaluator, s) for s in shots)
     return f"{base}\n\n{_EXAMPLES_MARKER}\n{body}"
 
 
@@ -118,7 +118,7 @@ def t_few_shot_fixed(opt) -> Optional[str]:
     if not record:
         return None
     train = opt.dataset.get_few_shot_examples(n=3, seed=42)
-    return _render_shots(_strip_examples(record.text), train[:3])
+    return _render_shots(opt, _strip_examples(record.text), train[:3])
 
 
 def _augmented(tag: str):
@@ -138,7 +138,7 @@ def _augmented(tag: str):
         if not train:
             return None
         k = random.randint(1, min(4, len(train)))
-        return _render_shots(_strip_examples(record.text), random.sample(train, k))
+        return _render_shots(opt, _strip_examples(record.text), random.sample(train, k))
 
     _fn.__name__ = f"t_few_shot_{tag}"
     return _fn

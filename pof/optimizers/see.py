@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 
 from pof.core.types import PromptRecord
 from pof.optimizers import register_optimizer
-from pof.optimizers.base import BaseOptimizer
+from pof.optimizers.base import format_exemplar, BaseOptimizer
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +248,7 @@ class SEEOptimizer(BaseOptimizer):
             k = random.randint(1, min(3, len(train)))
             shots = random.sample(train, k)
             examples = "\n\n".join(
-                f"Input: {s['input']}\nOutput: {s['target']}" for s in shots
+                format_exemplar(self.evaluator, s) for s in shots
             )
             icl_text = f"{record.text}\n\nExamples:\n{examples}"
             candidates.append(self._create_record(

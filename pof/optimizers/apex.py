@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional
 
 from pof.core.types import PromptRecord
 from pof.optimizers import register_optimizer
-from pof.optimizers.base import BaseOptimizer, _GENERATE_SYSTEM_PROMPT, _IMPROVE_SYSTEM_PROMPT
+from pof.optimizers.base import format_exemplar, BaseOptimizer, _GENERATE_SYSTEM_PROMPT, _IMPROVE_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +248,7 @@ class APEXOptimizer(BaseOptimizer):
         )
         exemplars = self.dataset.get_few_shot_examples(n=2)
         exemplar_text = "\n".join(
-            f"Input: {s['input'][:150]}\nOutput: {s['target']}" for s in exemplars
+            format_exemplar(self.evaluator, s, max_input=150) for s in exemplars
         )
         meta_prompt = (
             "Below are instructions for a task, sorted by performance score "
@@ -280,7 +280,7 @@ class APEXOptimizer(BaseOptimizer):
         k = random.randint(1, min(3, len(train)))
         shots = random.sample(train, k)
         examples = "\n\n".join(
-            f"Input: {s['input']}\nOutput: {s['target']}" for s in shots
+            format_exemplar(self.evaluator, s) for s in shots
         )
         return [f"{record.text}\n\nExamples:\n{examples}"]
 
@@ -306,7 +306,7 @@ class APEXOptimizer(BaseOptimizer):
     ) -> Optional[str]:
         """Generate a prompt using an expert persona."""
         examples_text = "\n".join(
-            f"Input: {s['input'][:80]}\nOutput: {s['target']}"
+            format_exemplar(self.evaluator, s, max_input=80)
             for s in samples[:3]
         )
         meta_prompt = (

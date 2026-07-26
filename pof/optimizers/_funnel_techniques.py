@@ -39,6 +39,7 @@ import re
 from typing import Callable, Dict, List, Optional
 
 from pof.optimizers.base import (
+    format_exemplar,
     _CRITIQUE_SYSTEM_PROMPT,
     _GENERATE_SYSTEM_PROMPT,
     _IMPROVE_SYSTEM_PROMPT,
@@ -203,7 +204,7 @@ def t_few_shot(opt) -> Optional[str]:
         return None
     k = random.randint(1, min(3, len(train)))
     shots = random.sample(train, k)
-    examples = "\n\n".join(f"Input: {s['input']}\nOutput: {s['target']}" for s in shots)
+    examples = "\n\n".join(format_exemplar(opt.evaluator, s) for s in shots)
     return f"{base_text}\n\nExamples:\n{examples}"
 
 

@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pof.core.types import PromptRecord
 from pof.optimizers import register_optimizer
-from pof.optimizers.base import BaseOptimizer
+from pof.optimizers.base import format_exemplar, BaseOptimizer
 
 logger = logging.getLogger(__name__)
 
@@ -166,12 +166,13 @@ class CAPOOptimizer(BaseOptimizer):
         """Get (instruction, few_shots) for a record, falling back to raw text."""
         return self._genomes.get(record.id, (record.text, []))
 
-    @staticmethod
-    def _render_prompt(instruction: str, few_shots: List[Dict[str, str]]) -> str:
+    def _render_prompt(self, instruction: str, few_shots: List[Dict[str, str]]) -> str:
+        # No longer a staticmethod: exemplars are now rendered in the output
+        # format the evaluator expects, which requires access to the evaluator.
         if not few_shots:
             return instruction
         examples = "\n\n".join(
-            f"Input: {s['input']}\nOutput: {s['target']}" for s in few_shots
+            format_exemplar(self.evaluator, s) for s in few_shots
         )
         return f"{instruction}\n\nExamples:\n{examples}"
 

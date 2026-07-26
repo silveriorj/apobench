@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 from pof.core.types import PromptRecord
 from pof.optimizers import register_optimizer
 from pof.optimizers.base import (
+    format_exemplar,
     BaseOptimizer,
     _GENERATE_SYSTEM_PROMPT,
     _IMPROVE_SYSTEM_PROMPT,
@@ -256,7 +257,7 @@ class GAAPOOptimizer(BaseOptimizer):
         k = random.randint(1, min(3, len(train)))
         shots = random.sample(train, k)
         examples = "\n\n".join(
-            f"Input: {s['input']}\nOutput: {s['target']}" for s in shots
+            format_exemplar(self.evaluator, s) for s in shots
         )
         text = f"{parent.text}\n\nExamples:\n{examples}"
         return self._create_record(

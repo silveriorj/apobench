@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional
 
 from pof.core.types import GenerationConfig, PromptRecord
 from pof.optimizers import register_optimizer
-from pof.optimizers.base import BaseOptimizer, _GENERATE_SYSTEM_PROMPT, _IMPROVE_SYSTEM_PROMPT
+from pof.optimizers.base import format_exemplar, BaseOptimizer, _GENERATE_SYSTEM_PROMPT, _IMPROVE_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +175,7 @@ class SWIFTOptimizer(BaseOptimizer):
             k = _random.randint(1, min(3, len(train)))
             shots = _random.sample(train, k)
             examples = "\n\n".join(
-                f"Input: {s['input']}\nOutput: {s['target']}" for s in shots
+                format_exemplar(self.evaluator, s) for s in shots
             )
             fs_text = f"{record.text}\n\nExamples:\n{examples}"
             if not self._is_duplicate(fs_text):
@@ -245,7 +245,7 @@ class SWIFTOptimizer(BaseOptimizer):
             k = _random.randint(1, min(3, len(train)))
             shots = _random.sample(train, k)
             examples = "\n\n".join(
-                f"Input: {s['input']}\nOutput: {s['target']}" for s in shots
+                format_exemplar(self.evaluator, s) for s in shots
             )
             fs_text = f"{record.text}\n\nExamples:\n{examples}"
             if not self._is_duplicate(fs_text):
@@ -306,7 +306,7 @@ class SWIFTOptimizer(BaseOptimizer):
         Includes task exemplars in the meta-prompt, per OPRO's ablations."""
         exemplars = self.dataset.get_few_shot_examples(n=2)
         exemplar_text = "\n".join(
-            f"Input: {s['input'][:150]}\nOutput: {s['target']}" for s in exemplars
+            format_exemplar(self.evaluator, s, max_input=150) for s in exemplars
         )
         meta_prompt = (
             "Below are instructions for a task, sorted by performance score "
