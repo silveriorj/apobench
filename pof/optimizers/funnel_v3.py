@@ -46,12 +46,23 @@ because `funnel_v3` now denotes a different method.
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import List, Optional
 
 from pof.optimizers import register_optimizer
 from pof.optimizers.funnel_v2 import FUNNEL_V2_POOL, FUNNELv2Optimizer
 
 logger = logging.getLogger(__name__)
+
+# Marker used by `t_few_shot` when it appends demonstrations.
+_EXAMPLES_MARKER = "Examples:"
+
+# Appended to every operator's system prompt in v3. Phrased conditionally so it
+# is inert when the instruction carries no demonstrations.
+_PRESERVE_CLAUSE = (
+    "If the instruction you are given contains a section beginning "
+    "'Examples:', you MUST reproduce that entire section verbatim, unchanged, "
+    "at the end of your output."
+)
 
 # Promoted to a guaranteed sweep; everything else stays under UCB1.
 V3_STATIC: List[str] = ["few_shot"]
@@ -66,5 +77,63 @@ class FUNNELv3Optimizer(FUNNELv2Optimizer):
 
     name = "funnel_v3"
 
+    _examples_repaired: int = 0
+
     STATIC_ARMS: List[str] = V3_STATIC
     BANDIT_ARMS: List[str] = V3_BANDIT
+
+    def _generate_prompt(
+        self,
+        instruction: str,
+        temperature: float = 0.7,
+        max_new_tokens: int = 512,
+        system_prompt: Optional[str] = None,
+    ) -> str:
+        """Append the demonstration-preservation clause to every operator call.
+
+        The prompt-engineering half of the fix. Scoped to v3 by overriding here
+        rather than editing the shared constants in `base.py`, which every other
+        method also uses — changing those would invalidate the whole benchmark.
+        """
+        if system_prompt:
+            system_prompt = f"{system_prompt} {_PRESERVE_CLAUSE}"
+        else:
+            system_prompt = _PRESERVE_CLAUSE
+        return super()._generate_prompt(
+            instruction, temperature=temperature,
+            max_new_tokens=max_new_tokens, system_prompt=system_prompt,
+        )
+
+    def _post_process(self, text, parent):
+        """Re-attach demonstrations the operator dropped despite being told not to.
+
+        The mechanical half. A 4B model ignores the clause a large fraction of
+        the time, so instruction alone leaves preservation probabilistic; this
+        makes it deterministic. Only ever ADDS back the parent's own block — it
+        never invents examples, and it leaves alone any child that kept or
+        rewrote its own.
+        """
+        if not text or parent is None:
+            return text
+        parent_text = parent.text or ""
+        if _EXAMPLES_MARKER not in parent_text or _EXAMPLES_MARKER in text:
+            return text
+        block = parent_text.split(_EXAMPLES_MARKER, 1)[1]
+        if not block.strip():
+            return text
+        self._examples_repaired += 1
+        return f"{text.rstrip()}\n\n{_EXAMPLES_MARKER}{block}"
+
+    def _init_population(self):
+        self._examples_repaired = 0
+        return super()._init_population()
+
+    def _finalize(self) -> None:
+        super()._finalize()
+        if self._examples_repaired:
+            note = (
+                f"demonstration preservation: re-attached examples to "
+                f"{self._examples_repaired} candidate(s) whose operator dropped them"
+            )
+            logger.info(f"[{self.name}] {note}")
+            self.tracker.add_note(note)

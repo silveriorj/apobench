@@ -94,9 +94,14 @@ def _pick_elite(opt, top_k: int = 3):
     """
     forced = getattr(opt, "_forced_elite", None)
     if forced is not None:
+        opt._last_elite = forced
         return forced
     pool = opt.population[:top_k] if opt.population else []
-    return random.choice(pool) if pool else None
+    chosen = random.choice(pool) if pool else None
+    # Record the target so a scheduler can post-process the result against the
+    # record it was derived from. Inert for optimizers that never read it.
+    opt._last_elite = chosen
+    return chosen
 
 
 def _ensure_details(opt, record):

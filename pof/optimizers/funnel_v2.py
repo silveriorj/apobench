@@ -175,6 +175,14 @@ class FUNNELv2Optimizer(BaseOptimizer):
     STATIC_ARMS: List[str] = []
     BANDIT_ARMS: List[str] = FUNNEL_V2_POOL
 
+    def _post_process(self, text: Optional[str], parent: Optional[PromptRecord]) -> Optional[str]:
+        """Hook applied to every operator's output before it becomes a record.
+
+        Identity in v2. Subclasses use it to repair properties that operators
+        destroy (see `funnel_v3.py`).
+        """
+        return text
+
     def _apply_static_core(self, candidates: List[PromptRecord]) -> int:
         """Run each guaranteed operator on EVERY elite. No-op when empty.
 
@@ -192,6 +200,7 @@ class FUNNELv2Optimizer(BaseOptimizer):
                     text = fn(self)
                 finally:
                     self._forced_elite = None
+                text = self._post_process(text, elite)
                 if text and not self._is_duplicate(text):
                     candidates.append(self._create_record(
                         text, operator=name, parent_ids=[elite.id],
@@ -528,6 +537,7 @@ class FUNNELv2Optimizer(BaseOptimizer):
             produced = 0
             for _ in range(n_draws):
                 text = fn(self)
+                text = self._post_process(text, getattr(self, "_last_elite", None))
                 if text and not self._is_duplicate(text):
                     candidates.append(self._create_record(
                         text, operator=name,
