@@ -85,6 +85,16 @@ _EXPERT_PERSONAS = [
 
 
 def _pick_elite(opt, top_k: int = 3):
+    """Choose the record an operator acts on.
+
+    Normally a random draw from the top-`top_k` elites. When the caller has set
+    `opt._forced_elite`, that record is returned instead — this lets a scheduler
+    apply an operator to a SPECIFIC elite (e.g. sweeping every member of the
+    population) without changing any operator's signature.
+    """
+    forced = getattr(opt, "_forced_elite", None)
+    if forced is not None:
+        return forced
     pool = opt.population[:top_k] if opt.population else []
     return random.choice(pool) if pool else None
 
