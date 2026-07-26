@@ -12,18 +12,19 @@ method:
    AutoHint, GrIPS, AMPO, UniPrompt) — see `_funnel_v2_techniques.py`. Two are
    ZERO-LLM-call (GrIPS delete/swap), buying free exploration under a call cap.
 
-2. **Successive-halving validation scaling** — v1 evaluated every candidate on
-   the same fixed 50-sample dev subset at every phase. v2 scales the validation
-   size across phases (small N when there are many candidates and only coarse
-   ranking is needed; full dev when few candidates remain and selection
-   precision determines the final answer), so evaluation budget concentrates on
-   exploitation rather than being spent uniformly on early exploration.
+2. **Identical evaluation protocol to the rest of the benchmark** — every phase
+   evaluates on a flat `eval_sample_size` (50) sample, the same value the other
+   methods use, so the operator pool and the barrier gate are the only things
+   that differ. A scaled schedule was tried and measured first; it cost 53%
+   more than flat-50 and introduced a third protocol difference, so it was
+   dropped (see the note above `MIN_PHASE_N`).
 
-   Sample sets are strict NESTED PREFIXES of one shuffled dev pool. This
-   matters: `TaskDataset.get_eval_samples` uses `random.sample`, whose outputs
-   are NOT nested across different `n` (CPython switches selection algorithms
-   at a size threshold), so naively varying `n` would make phase-to-phase score
-   differences reflect subset composition as much as sample size.
+   The sample is a fixed prefix of one deterministically shuffled dev pool
+   rather than a per-call draw. `TaskDataset.get_eval_samples` uses
+   `random.sample`, whose outputs are not nested across different `n` and which
+   re-draws per call; taking a stable prefix guarantees every candidate in a
+   run is scored on exactly the same instances, which is what makes the
+   candidate-vs-candidate comparison in selection meaningful.
 
 3. **Output-verbosity barrier gate** — evaluation caps generation at 32 new
    tokens for BBH, and a truncated answer is always scored wrong. Prompts that
@@ -102,17 +103,33 @@ assert all(t in _ALL_TECHNIQUE_FNS for t in FUNNEL_V2_POOL), (
 # the eight heavy operators no-op when the elite has no failures, collapsing the
 # pool to its cheap tier exactly when budget is most available. Starting at 0.30
 # keeps early scores off the ceiling.
-# The final fraction is deliberately below 1.0. Evaluating the last phase on
-# the entire dev split costs far more than it buys: at p=0.65 the standard
-# error of an EM estimate falls only from 0.0506 (N=89) to 0.0423 (N=127), a
-# 0.008 gain for 43% more samples, while the last phase is the most expensive
-# one because candidates there have the least cached prefix to reuse. Capping
-# at 0.75 keeps essentially all of the variance reduction at ~75% of the cost.
-PHASE_N_FRACTIONS: List[float] = [0.30, 0.45, 0.60, 0.75]
+# Evaluation uses a FLAT sample size, equal to `eval_sample_size` (50 by
+# default, set from `evaluation.sample_size` in the run config) — the same
+# value every other method in the benchmark uses.
+#
+# An earlier design scaled N across phases (38/57/76/95 on a 127-example dev
+# split), on the successive-halving argument that precision matters most at the
+# final selection. Measured, that trade did not pay for itself here:
+#
+#   schedule                sample-evals   final N
+#   scaled 38/57/76/95           4,199        95
+#   flat 95                      5,225        95
+#   flat 50                      2,750        50
+#
+# Scaling was 20% cheaper than a flat 95 for identical final precision, but 53%
+# MORE expensive than the flat 50 the rest of the benchmark runs at, roughly
+# doubling wall-clock time. It also made FUNNELv2 select on 95 dev samples while
+# every method it is compared against selects on 50 — a third simultaneous
+# protocol difference (alongside the operator pool and the barrier gate), which
+# would make any observed difference hard to attribute to the thing under test.
+#
+# Flat N keeps the comparison clean. The nested-prefix pool below is retained
+# because it still guarantees every candidate is scored on an identical sample.
 MIN_PHASE_N = 16
 
 # How many top-scoring records to verify at the final N before reporting a
-# winner (see `_finalize`).
+# winner (see `_finalize`). Under a flat schedule this is normally a no-op; it
+# remains as a guard against any record entering the ranking under-evaluated.
 FINALIZE_TOP_K = 6
 
 # Chance-level accuracy per BBH task, from Suzgun et al. (2023) Table 3
@@ -179,9 +196,12 @@ class FUNNELv2Optimizer(BaseOptimizer):
         pool = list(full_dev)
         random.Random(42).shuffle(pool)
         self._dev_pool: List[Dict[str, str]] = pool
-        self._phase_sizes = self._compute_phase_sizes(len(pool))
+        self._phase_sizes = self._compute_phase_sizes(
+            len(pool), self.eval_sample_size, n_phases=max(1, num_iterations)
+        )
         logger.info(
-            f"[FUNNELv2] dev pool={len(pool)}; phase N schedule={self._phase_sizes}"
+            f"[FUNNELv2] dev pool={len(pool)}; flat eval N={self._phase_sizes[0]} "
+            f"across {len(self._phase_sizes)} phases"
         )
 
         # Cross-run pruning + UCB1 warm start, scoped to THIS task so the
@@ -216,15 +236,14 @@ class FUNNELv2Optimizer(BaseOptimizer):
         return getattr(self.dataset, "name", "") or ""
 
     @staticmethod
-    def _compute_phase_sizes(dev_size: int) -> List[int]:
-        sizes = []
-        for frac in PHASE_N_FRACTIONS:
-            n = max(MIN_PHASE_N, int(round(dev_size * frac)))
-            sizes.append(min(n, dev_size))
-        # Enforce monotonic non-decreasing after clamping.
-        for i in range(1, len(sizes)):
-            sizes[i] = max(sizes[i], sizes[i - 1])
-        return sizes
+    def _compute_phase_sizes(dev_size: int, eval_sample_size: int, n_phases: int = 4) -> List[int]:
+        """Flat schedule: every phase evaluates on the same sample size.
+
+        Clamped to the dev split, which for BBH holds only 64-127 examples, so
+        a configured 50 is reachable on every task.
+        """
+        n = min(max(MIN_PHASE_N, eval_sample_size), dev_size)
+        return [n] * n_phases
 
     def _phase_samples(self, phase: int) -> List[Dict[str, str]]:
         n = self._phase_sizes[min(phase, len(self._phase_sizes) - 1)]
