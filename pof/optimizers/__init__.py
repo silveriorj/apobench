@@ -7,6 +7,7 @@ from __future__ import annotations
 from pof.optimizers.base import BaseOptimizer
 
 _REGISTRY: dict = {}
+_LOADED = False
 
 
 def register_optimizer(name: str):
@@ -20,8 +21,7 @@ def register_optimizer(name: str):
 def get_optimizer(name: str) -> type:
     """Get optimizer class by name."""
     # Lazy imports to avoid circular dependencies
-    if not _REGISTRY:
-        _load_all()
+    _load_all()
     key = name.lower()
     if key not in _REGISTRY:
         raise ValueError(
@@ -32,13 +32,23 @@ def get_optimizer(name: str) -> type:
 
 def list_optimizers() -> list:
     """List all registered optimizer names."""
-    if not _REGISTRY:
-        _load_all()
+    _load_all()
     return sorted(_REGISTRY.keys())
 
 
 def _load_all():
-    """Import all optimizer modules to trigger registration."""
+    """Import all optimizer modules to trigger registration.
+
+    Guarded by an explicit flag rather than `if not _REGISTRY`. Emptiness is the
+    wrong test: importing any optimizer module directly registers that one as a
+    side effect, leaving the registry non-empty but INCOMPLETE, after which the
+    old guard skipped loading and every other optimizer stayed invisible —
+    surfacing later as a spurious "Unknown optimizer" for a method that exists.
+    """
+    global _LOADED
+    if _LOADED:
+        return
+    _LOADED = True
     from pof.optimizers import see  # noqa: F401
     from pof.optimizers import swift  # noqa: F401
     from pof.optimizers import swift_v2  # noqa: F401
