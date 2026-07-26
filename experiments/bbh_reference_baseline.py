@@ -34,7 +34,7 @@ from typing import Dict, List
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pof.datasets.loader import load_dataset
+from pof.datasets.loader import load_dataset_by_name
 from pof.evaluation.evaluator import Evaluator
 from pof.llm.factory import create_llm
 from pof.config.schemas import LLMConfig
@@ -98,7 +98,7 @@ def main() -> None:
             "instruction_only": extract_instruction(raw),
             "answer_only_3shot": build_answer_only(raw),
         }
-        dataset = load_dataset("bbh", task=task, seed=42)
+        dataset = load_dataset_by_name("bbh", task=task, num_samples=100000, seed=42)
         samples = dataset.get_eval_samples("test", n=args.test_n)
         evaluator = Evaluator(llm, task_type="auto",
                               max_new_tokens=args.max_new_tokens,
