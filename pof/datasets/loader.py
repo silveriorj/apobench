@@ -18,6 +18,13 @@ from pof.core.exceptions import DatasetError
 
 logger = logging.getLogger(__name__)
 
+# Seed used to carve the held-out TEST split. Deliberately CONSTANT: the
+# test set must be identical across run seeds so their scores are
+# comparable. Run seeds still vary train/dev, which is the optimizer-facing
+# randomness the seed sweep is meant to measure. Value 42 preserves the
+# test set that seed-42 runs already used.
+TEST_SPLIT_SEED = 42
+
 # BigBench-Hard tasks
 BBH_TASKS = [
     "boolean_expressions",
@@ -213,7 +220,9 @@ def _load_bbh(task: str, num_samples: int, seed: int) -> TaskDataset:
             all_samples.append(sample)
 
     # Shuffle with all available samples (no cap)
-    rng = random.Random(seed)
+    # Test split is carved with a FIXED seed so the held-out set is identical
+    # across run seeds; only train/dev vary with the run seed (see module note).
+    rng = random.Random(TEST_SPLIT_SEED)
     rng.shuffle(all_samples)
 
     # Fixed-size splits: test is reserved first (held-out, fixed at 115),
@@ -230,8 +239,10 @@ def _load_bbh(task: str, num_samples: int, seed: int) -> TaskDataset:
     n_dev = len(all_samples) - n_test - n_train
 
     test = all_samples[:n_test]
-    train = all_samples[n_test: n_test + n_train]
-    dev = all_samples[n_test + n_train:]
+    _rest = all_samples[n_test:]
+    random.Random(seed).shuffle(_rest)   # run seed varies train/dev only
+    train = _rest[:n_train]
+    dev = _rest[n_train:]
 
     # Detect task type
     task_type = _detect_task_type(train)
@@ -279,7 +290,9 @@ def _load_livebench_math(task: str, num_samples: int, seed: int) -> TaskDataset:
             f"livebench/math returned no samples (task filter: {task!r})"
         )
 
-    rng = random.Random(seed)
+    # Test split is carved with a FIXED seed so the held-out set is identical
+    # across run seeds; only train/dev vary with the run seed (see module note).
+    rng = random.Random(TEST_SPLIT_SEED)
     rng.shuffle(all_samples)
 
     # Same fixed-size splits as BBH (small-task fallback included)
@@ -291,8 +304,10 @@ def _load_livebench_math(task: str, num_samples: int, seed: int) -> TaskDataset:
         n_test = min(115, max(1, len(all_samples) - n_train - 33))
 
     test = all_samples[:n_test]
-    train = all_samples[n_test: n_test + n_train]
-    dev = all_samples[n_test + n_train:]
+    _rest = all_samples[n_test:]
+    random.Random(seed).shuffle(_rest)   # run seed varies train/dev only
+    train = _rest[:n_train]
+    dev = _rest[n_train:]
 
     name = f"livebench_math_{task}" if task else "livebench_math"
     return TaskDataset(
@@ -343,11 +358,14 @@ def _load_gsm8k(num_samples: int, seed: int) -> TaskDataset:
         {"input": item["question"], "target": _extract_answer(item["answer"])}
         for item in hf_test
     ]
-    rng.shuffle(test_samples_raw)
+    # Fixed seed carves the held-out test set identically for every run seed;
+    # only dev is re-shuffled per run seed (train came from the HF train split).
+    random.Random(TEST_SPLIT_SEED).shuffle(test_samples_raw)
 
     n_test = min(115, max(1, len(test_samples_raw) - 50))
     test = test_samples_raw[:n_test]
     dev = test_samples_raw[n_test:]
+    random.Random(seed).shuffle(dev)
 
     logger.info(f"GSM8K loaded: {len(train_samples)} train, {len(dev)} dev, {len(test)} test")
 
@@ -398,11 +416,14 @@ def _load_svamp(num_samples: int, seed: int) -> TaskDataset:
         {"input": item["question_concat"], "target": _format_answer(item["Answer"])}
         for item in hf_test
     ]
-    rng.shuffle(test_samples_raw)
+    # Fixed seed carves the held-out test set identically for every run seed;
+    # only dev is re-shuffled per run seed (train came from the HF train split).
+    random.Random(TEST_SPLIT_SEED).shuffle(test_samples_raw)
 
     n_test = min(115, max(1, len(test_samples_raw) - 50))
     test = test_samples_raw[:n_test]
     dev = test_samples_raw[n_test:]
+    random.Random(seed).shuffle(dev)
 
     logger.info(f"SVAMP loaded: {len(train_samples)} train, {len(dev)} dev, {len(test)} test")
 
@@ -445,7 +466,9 @@ def _load_humaneval(num_samples: int, seed: int) -> TaskDataset:
             "_canonical": item["canonical_solution"],
         })
 
-    rng = random.Random(seed)
+    # Test split is carved with a FIXED seed so the held-out set is identical
+    # across run seeds; only train/dev vary with the run seed (see module note).
+    rng = random.Random(TEST_SPLIT_SEED)
     rng.shuffle(all_samples)
 
     # 164 problems total → small-task split: train=3, dev=46, test=115
@@ -457,8 +480,10 @@ def _load_humaneval(num_samples: int, seed: int) -> TaskDataset:
         n_test = min(115, max(1, len(all_samples) - n_train - 33))
 
     test = all_samples[:n_test]
-    train = all_samples[n_test: n_test + n_train]
-    dev = all_samples[n_test + n_train:]
+    _rest = all_samples[n_test:]
+    random.Random(seed).shuffle(_rest)   # run seed varies train/dev only
+    train = _rest[:n_train]
+    dev = _rest[n_train:]
 
     # Train samples feed few-shot/Lamarckian operators — show the canonical
     # solution as the target, not the JSON test blob used for scoring.
