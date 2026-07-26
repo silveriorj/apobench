@@ -78,6 +78,31 @@ def build_answer_only(prompt_text: str) -> str:
     return instruction + "\n\n" + "\n\n".join(rebuilt)
 
 
+def build_json_3shot(prompt_text: str) -> str:
+    """Answer-only exemplars whose answers are written in OUR output format.
+
+    `build_answer_only` reproduces Suzgun's exemplars literally, as `A: (A)`.
+    But our evaluator's system prompt demands `{"answer": "..."}`, so those
+    exemplars demonstrate one format while the system prompt mandates another,
+    and the model is pulled between them. That is a property of pairing their
+    prompt with our harness, not of few-shot prompting, and it depresses the
+    baseline for the wrong reason — on boolean_expressions the literal AO
+    prompt scored 0.7652 against 0.8522 for the bare instruction.
+
+    This variant keeps the exemplars identical and rewrites only the answer
+    line, isolating "do demonstrations help" from "do the two formats collide".
+    """
+    ao = build_answer_only(prompt_text)
+    out = []
+    for line in ao.split("\n"):
+        if line.startswith("A: "):
+            answer = line[3:].strip()
+            out.append('A: {"answer": "%s"}' % answer.replace('"', '\\"'))
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--tasks", nargs="+", required=True)
@@ -97,6 +122,7 @@ def main() -> None:
         variants = {
             "instruction_only": extract_instruction(raw),
             "answer_only_3shot": build_answer_only(raw),
+            "json_3shot": build_json_3shot(raw),
         }
         dataset = load_dataset_by_name("bbh", task=task, num_samples=100000, seed=42)
         samples = dataset.get_eval_samples("test", n=args.test_n)
