@@ -85,23 +85,12 @@ _FREE = ["grips_delete", "grips_swap", "midpoint_crossover", "format_constraint"
 
 FUNNEL_V2_POOL: List[str] = _HEAVY + _CHEAP + _FREE
 
-# --- Static backbone vs. dynamic pool ---
+# --- Split used by FUNNELv3 (see `funnel_v3.py`), defined here so both
+# --- versions share one source of truth for the operator names.
 #
-# v1 (and APEX before it) selected operators purely by bandit, and each operator
-# then acted on ONE randomly drawn elite. Coverage was therefore stochastic and
-# incomplete: with a top-3 draw and 2 attempts per operator, the best prompt had
-# a 44% chance of never receiving any given operator, and elites 4-5 were never
-# touched at all.
-#
-# FUNNELv2 splits the pool. The three operators below run on EVERY elite, every
-# phase, guaranteed — they are the mechanisms v2 exists to test (success-anchored
-# feedback, error-taxonomy guidance, aggregated hints) and the ones whose value
-# is destroyed by patchy coverage. The remaining 17 stay under UCB1 on the top-3,
-# where adaptive allocation is doing genuine work.
-#
-# This is the hybrid the benchmark otherwise lacks: SWIFT is pure curation
-# (fixed schedule, full coverage), APEX pure adaptation (bandit, random
-# coverage). FUNNELv2 is curated backbone + adaptive remainder.
+# v2 itself does NOT use this split: it is pure adaptation, with all 20
+# operators as bandit arms and none guaranteed. v3 promotes the three below to
+# a static backbone run on every elite each phase, leaving 17 under UCB1.
 STATIC_CORE: List[str] = ["strago_dual", "etgpo_taxonomy", "autohint"]
 BANDIT_POOL: List[str] = [t for t in FUNNEL_V2_POOL if t not in STATIC_CORE]
 
@@ -176,6 +165,41 @@ class FUNNELv2Optimizer(BaseOptimizer):
 
     name = "funnel_v2"
 
+    # Scheduling contract, overridden by subclasses (see `funnel_v3.py`).
+    # v2 is pure adaptation: every one of the 20 operators is a bandit arm and
+    # none is guaranteed. A subclass can move operators into STATIC_ARMS to run
+    # them on every elite each phase, leaving BANDIT_ARMS under UCB1.
+    STATIC_ARMS: List[str] = []
+    BANDIT_ARMS: List[str] = FUNNEL_V2_POOL
+
+    def _apply_static_core(self, candidates: List[PromptRecord]) -> int:
+        """Run each guaranteed operator on EVERY elite. No-op when empty.
+
+        Uses the `_forced_elite` hook honoured by `_pick_elite`, so an operator
+        can be aimed at a specific record without altering its signature.
+        """
+        if not self.STATIC_ARMS:
+            return 0
+        made = 0
+        for name in self.STATIC_ARMS:
+            fn = _ALL_TECHNIQUE_FNS[name]
+            for elite in self.population:
+                self._forced_elite = elite
+                try:
+                    text = fn(self)
+                finally:
+                    self._forced_elite = None
+                if text and not self._is_duplicate(text):
+                    candidates.append(self._create_record(
+                        text, operator=name, parent_ids=[elite.id],
+                    ))
+                    made += 1
+        logger.info(
+            f"[{self.name} Phase {self._phase_idx}] static core produced "
+            f"{made} candidate(s) across {len(self.population)} elites"
+        )
+        return made
+
     def __init__(
         self,
         llm,
@@ -231,14 +255,14 @@ class FUNNELv2Optimizer(BaseOptimizer):
         historical = scan_technique_stats(
             output_dir,
             method_name=self.name,
-            technique_names=set(FUNNEL_V2_POOL),
+            technique_names=set(self.BANDIT_ARMS),
             task_filter=self._task_key(),
         )
         # Only bandit arms are subject to cross-run pruning. The static core is
         # guaranteed by design, so pruning it would silently dismantle the
         # backbone this method is built to test.
         self._active_techniques, self._dropped_techniques = prune_techniques(
-            historical, list(BANDIT_POOL),
+            historical, list(self.BANDIT_ARMS),
             min_n=min_n_for_pruning, z_threshold=prune_z_threshold,
         )
         if self._dropped_techniques:
@@ -448,25 +472,7 @@ class FUNNELv2Optimizer(BaseOptimizer):
         logger.info(f"[FUNNELv2 Gen {self.generation}] hybrid step, phase {self._phase_idx}")
         candidates = list(self.population)
 
-        # --- Static backbone: guaranteed, every elite, every phase ---
-        static_made = 0
-        for name in STATIC_CORE:
-            fn = _ALL_TECHNIQUE_FNS[name]
-            for elite in self.population:
-                self._forced_elite = elite
-                try:
-                    text = fn(self)
-                finally:
-                    self._forced_elite = None
-                if text and not self._is_duplicate(text):
-                    candidates.append(self._create_record(
-                        text, operator=name, parent_ids=[elite.id],
-                    ))
-                    static_made += 1
-        logger.info(
-            f"[FUNNELv2 Phase {self._phase_idx}] static core produced "
-            f"{static_made} candidate(s) across {len(self.population)} elites"
-        )
+        self._apply_static_core(candidates)
 
         # Walk the full UCB1 ranking, not just the top-M. An operator that
         # cannot apply right now (failure-driven operators return None when the
