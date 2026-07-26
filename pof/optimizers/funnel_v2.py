@@ -102,8 +102,18 @@ assert all(t in _ALL_TECHNIQUE_FNS for t in FUNNEL_V2_POOL), (
 # the eight heavy operators no-op when the elite has no failures, collapsing the
 # pool to its cheap tier exactly when budget is most available. Starting at 0.30
 # keeps early scores off the ceiling.
-PHASE_N_FRACTIONS: List[float] = [0.30, 0.45, 0.70, 1.0]
+# The final fraction is deliberately below 1.0. Evaluating the last phase on
+# the entire dev split costs far more than it buys: at p=0.65 the standard
+# error of an EM estimate falls only from 0.0506 (N=89) to 0.0423 (N=127), a
+# 0.008 gain for 43% more samples, while the last phase is the most expensive
+# one because candidates there have the least cached prefix to reuse. Capping
+# at 0.75 keeps essentially all of the variance reduction at ~75% of the cost.
+PHASE_N_FRACTIONS: List[float] = [0.30, 0.45, 0.60, 0.75]
 MIN_PHASE_N = 16
+
+# How many top-scoring records to verify at the final N before reporting a
+# winner (see `_finalize`).
+FINALIZE_TOP_K = 6
 
 # Chance-level accuracy per BBH task, from Suzgun et al. (2023) Table 3
 # ("Random" column). Used only for the trap-task test.
@@ -385,6 +395,7 @@ class FUNNELv2Optimizer(BaseOptimizer):
     def _step(self) -> List[PromptRecord]:
         self._phase_idx += 1
         if self._phase_idx >= len(self._phase_sizes):
+            self._finalize()
             raise StopIteration
 
         logger.info(f"[FUNNELv2 Gen {self.generation}] UCB1 step, phase {self._phase_idx}")
@@ -445,6 +456,40 @@ class FUNNELv2Optimizer(BaseOptimizer):
             self._check_trap()
 
         return self._tournament_select(candidates)
+
+    def _finalize(self) -> None:
+        """Verify every plausible winner at the final N before one is reported.
+
+        `AuditHistory.get_best_record` returns `max(records, key=score)` over
+        the ENTIRE run, including candidates dropped in an early phase. Those
+        were scored on a small sample and never re-evaluated, so their scores
+        carry the same upward bias that motivated `_evaluate_phase`: a Phase-0
+        candidate that got lucky on 38 samples can outrank a finalist honestly
+        measured on 95 and be reported as the run's best prompt — which is then
+        what the runner sends to the held-out test evaluation.
+
+        Re-evaluating the top contenders at the final N removes the bias where
+        it actually matters. Nested prefixes mean each one pays only its
+        increment. Iterated, because correcting the leaders can promote a
+        previously-lower record into contention.
+        """
+        n_final = self._phase_sizes[-1]
+        for _ in range(3):
+            contenders = sorted(
+                self.tracker.history.records.values(),
+                key=lambda r: r.score, reverse=True,
+            )[:FINALIZE_TOP_K]
+            under = [
+                r for r in contenders
+                if r.text and len(r.per_sample_details or []) < n_final
+            ]
+            if not under:
+                break
+            logger.info(
+                f"[FUNNELv2 finalize] verifying {len(under)} under-evaluated "
+                f"contender(s) at N={n_final}"
+            )
+            self._evaluate_phase(under, phase=len(self._phase_sizes) - 1)
 
     def _select_operators(self) -> List[str]:
         """Full UCB1 ranking of the active pool (same formula as APEX/FUNNEL v1).
