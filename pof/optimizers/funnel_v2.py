@@ -94,8 +94,16 @@ assert all(t in _ALL_TECHNIQUE_FNS for t in FUNNEL_V2_POOL), (
 
 # Fraction of the available dev split evaluated at each phase. Rising fractions
 # concentrate evaluation on the later, higher-stakes selection steps.
-PHASE_N_FRACTIONS: List[float] = [0.15, 0.30, 0.55, 1.0]
-MIN_PHASE_N = 8
+#
+# The Phase-0 fraction has a floor for a reason found empirically: at 0.15 of a
+# 127-example dev split (N=19), easy tasks such as boolean_expressions saturate
+# at EM=1.000 in Phase 0. A saturated score is measurement noise rather than a
+# solved task, and it starves every failure-driven operator of input — seven of
+# the eight heavy operators no-op when the elite has no failures, collapsing the
+# pool to its cheap tier exactly when budget is most available. Starting at 0.30
+# keeps early scores off the ceiling.
+PHASE_N_FRACTIONS: List[float] = [0.30, 0.45, 0.70, 1.0]
+MIN_PHASE_N = 16
 
 # Chance-level accuracy per BBH task, from Suzgun et al. (2023) Table 3
 # ("Random" column). Used only for the trap-task test.
@@ -334,13 +342,24 @@ class FUNNELv2Optimizer(BaseOptimizer):
         logger.info(f"[FUNNELv2 Gen {self.generation}] UCB1 step, phase {self._phase_idx}")
         candidates = list(self.population)
 
+        # Walk the full UCB1 ranking, not just the top-M. An operator that
+        # cannot apply right now (failure-driven operators return None when the
+        # elite has no failures on the current sample) yields its slot to the
+        # next-ranked arm rather than silently wasting it. On a healthy step
+        # this stops after `top_m_operators` arms and behaves identically to
+        # taking the top-M directly; it only backfills when arms no-op.
+        used_arms = 0
+        skipped: List[str] = []
         for name in self._select_operators():
+            if used_arms >= self.top_m_operators:
+                break
             fn = _ALL_TECHNIQUE_FNS[name]
             n_draws = self.candidates_per_operator
             # Zero-cost operators are stochastic string edits; drawing extra
             # samples from them costs no LLM calls, so take more.
             if name in ZERO_COST_TECHNIQUES:
                 n_draws += 1
+            produced = 0
             for _ in range(n_draws):
                 text = fn(self)
                 if text and not self._is_duplicate(text):
@@ -348,6 +367,17 @@ class FUNNELv2Optimizer(BaseOptimizer):
                         text, operator=name,
                         parent_ids=[r.id for r in self.population[:2]],
                     ))
+                    produced += 1
+            if produced:
+                used_arms += 1
+            else:
+                skipped.append(name)
+        if skipped:
+            logger.info(
+                f"[FUNNELv2 Phase {self._phase_idx}] {used_arms} arms produced "
+                f"candidates; backfilled past {len(skipped)} inapplicable "
+                f"arm(s): {', '.join(skipped)}"
+            )
 
         new_candidates = [c for c in candidates if c.score == 0.0]
         self._evaluate_phase(new_candidates, phase=self._phase_idx)
@@ -362,10 +392,16 @@ class FUNNELv2Optimizer(BaseOptimizer):
         return self._tournament_select(candidates)
 
     def _select_operators(self) -> List[str]:
-        """UCB1 over the active pool (identical formula to APEX/FUNNEL v1)."""
+        """Full UCB1 ranking of the active pool (same formula as APEX/FUNNEL v1).
+
+        Returns every arm in ranked order rather than a top-M slice; `_step`
+        consumes from the top and stops once `top_m_operators` arms have
+        actually produced candidates, so the tail is only reached when
+        higher-ranked arms cannot apply.
+        """
         total_pulls = sum(len(v) for v in self._operator_scores.values())
         if total_pulls == 0:
-            return self._active_techniques[: self.top_m_operators]
+            return list(self._active_techniques)
 
         scored: List[Tuple[float, str]] = []
         for name in self._active_techniques:
@@ -378,7 +414,7 @@ class FUNNELv2Optimizer(BaseOptimizer):
             scored.append((ucb, name))
 
         scored.sort(key=lambda t: t[0], reverse=True)
-        return [name for _, name in scored[: self.top_m_operators]]
+        return [name for _, name in scored]
 
     def _tournament_select(
         self, candidates: List[PromptRecord], tournament_size: int = 3
