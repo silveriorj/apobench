@@ -172,6 +172,9 @@ class FUNNELv2Optimizer(BaseOptimizer):
     # v2 is pure adaptation: every one of the 20 operators is a bandit arm and
     # none is guaranteed. A subclass can move operators into STATIC_ARMS to run
     # them on every elite each phase, leaving BANDIT_ARMS under UCB1.
+    EXTRA_TECHNIQUES: Dict[str, object] = {}
+    # Operators whose duplicates should re-enter the pool rather than be dropped.
+    DEDUP_REVIVE: set = set()
     STATIC_ARMS: List[str] = []
     BANDIT_ARMS: List[str] = FUNNEL_V2_POOL
 
@@ -192,8 +195,9 @@ class FUNNELv2Optimizer(BaseOptimizer):
         if not self.STATIC_ARMS:
             return 0
         made = 0
+        revived = 0
         for name in self.STATIC_ARMS:
-            fn = _ALL_TECHNIQUE_FNS[name]
+            fn = self.EXTRA_TECHNIQUES.get(name) or _ALL_TECHNIQUE_FNS[name]
             for elite in self.population[: self.static_top_k]:
                 self._forced_elite = elite
                 try:
@@ -206,9 +210,22 @@ class FUNNELv2Optimizer(BaseOptimizer):
                         text, operator=name, parent_ids=[elite.id],
                     ))
                     made += 1
+                elif text and name in self.DEDUP_REVIVE:
+                    # This operator exists to keep a prompt FORM in contention,
+                    # so being a duplicate is the normal case, not a waste. Rather
+                    # than minting an identical record (which would be re-scored
+                    # for nothing), re-enter the existing one so the form keeps
+                    # competing at zero evaluation cost.
+                    existing = self.tracker.history.get_by_hash(
+                        PromptRecord._compute_hash(text.strip())
+                    )
+                    if existing is not None and existing not in candidates:
+                        candidates.append(existing)
+                        revived += 1
         logger.info(
             f"[{self.name} Phase {self._phase_idx}] static core produced "
-            f"{made} candidate(s) across {len(self.population[: self.static_top_k])} elites"
+            f"{made} new + {revived} revived candidate(s) across "
+            f"{len(self.population[: self.static_top_k])} elites"
         )
         return made
 

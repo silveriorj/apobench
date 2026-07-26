@@ -46,9 +46,12 @@ because `funnel_v3` now denotes a different method.
 from __future__ import annotations
 
 import logging
+import random
+import re
 from typing import List, Optional
 
 from pof.optimizers import register_optimizer
+from pof.optimizers._funnel_techniques import _pick_elite
 from pof.optimizers.funnel_v2 import FUNNEL_V2_POOL, FUNNELv2Optimizer
 
 logger = logging.getLogger(__name__)
@@ -64,11 +67,90 @@ _PRESERVE_CLAUSE = (
     "at the end of your output."
 )
 
-# Promoted to a guaranteed sweep; everything else stays under UCB1.
-V3_STATIC: List[str] = ["few_shot"]
-V3_BANDIT: List[str] = [t for t in FUNNEL_V2_POOL if t not in V3_STATIC]
+def _strip_examples(text: str) -> str:
+    """The bare instruction, with any demonstration block removed."""
+    return re.split(r"\n\n" + _EXAMPLES_MARKER, text)[0].rstrip()
 
-assert len(V3_BANDIT) == 19, f"expected 19 bandit arms, got {len(V3_BANDIT)}"
+
+def _render_shots(base: str, shots: List[dict]) -> Optional[str]:
+    if not shots:
+        return None
+    body = "\n\n".join(f"Input: {s['input']}\nOutput: {s['target']}" for s in shots)
+    return f"{base}\n\n{_EXAMPLES_MARKER}\n{body}"
+
+
+def t_few_shot_fixed(opt) -> Optional[str]:
+    """Deterministic demonstrations: always the same 3 training examples.
+
+    The reproducible anchor of the family. Because it does not vary, it isolates
+    "does adding demonstrations at all help" from "did we happen to draw a good
+    set", and it is stable across seeds, which the randomized variants are not.
+    """
+    record = _pick_elite(opt)
+    if not record:
+        return None
+    train = opt.dataset.get_few_shot_examples(n=3, seed=42)
+    return _render_shots(_strip_examples(record.text), train[:3])
+
+
+def _augmented(tag: str):
+    """Randomized demonstrations: varied count and selection.
+
+    Two independent draws accompany the fixed variant, so the search explores
+    the demonstration subspace rather than testing a single arbitrary set. All
+    are ZERO-LLM-call — only their evaluation costs anything.
+    """
+    def _fn(opt) -> Optional[str]:
+        record = _pick_elite(opt)
+        if not record:
+            return None
+        train = opt.dataset.get_few_shot_examples(
+            n=8, seed=random.randint(0, 10**6)
+        )
+        if not train:
+            return None
+        k = random.randint(1, min(4, len(train)))
+        return _render_shots(_strip_examples(record.text), random.sample(train, k))
+
+    _fn.__name__ = f"t_few_shot_{tag}"
+    return _fn
+
+
+def t_instruction_only(opt) -> Optional[str]:
+    """The elite with its demonstration block removed — the 'original' half.
+
+    Necessary because demonstrations are otherwise absorbing. Once an elite
+    carries examples, `_post_process` re-attaches them to every descendant, so
+    within a phase or two the whole population carries examples and the bare
+    form can never be re-tested (measured: 50 of 60 records example-bearing,
+    only 10 bare). Emitting the stripped form as its own candidate keeps both
+    halves of the split alive, so selection always compares
+    with-demonstrations against without rather than being locked into one.
+
+    Deduplicated away when the elite is already bare, so it costs nothing then.
+    """
+    record = _pick_elite(opt)
+    if not record:
+        return None
+    bare = _strip_examples(record.text)
+    return bare if bare and bare != record.text else None
+
+
+# Per elite: the bare instruction, one deterministic demonstration set, and two
+# randomized ones. Swept over the top-3 elites every phase.
+V3_FEW_SHOT_FNS = {
+    "instruction_only": t_instruction_only,
+    "few_shot_fixed": t_few_shot_fixed,
+    "few_shot_aug_a": _augmented("aug_a"),
+    "few_shot_aug_b": _augmented("aug_b"),
+}
+
+V3_STATIC: List[str] = list(V3_FEW_SHOT_FNS)
+# `few_shot` stays a bandit arm as well: the guaranteed family covers the top-3
+# elites, the arm can still reach elsewhere in the population.
+V3_BANDIT: List[str] = list(FUNNEL_V2_POOL)
+
+assert len(V3_BANDIT) == 20, f"expected 20 bandit arms, got {len(V3_BANDIT)}"
 
 
 @register_optimizer("funnel_v3")
@@ -78,6 +160,12 @@ class FUNNELv3Optimizer(FUNNELv2Optimizer):
     name = "funnel_v3"
 
     _examples_repaired: int = 0
+
+    # Registered so `_apply_static_core` can resolve the v3-only operators.
+    EXTRA_TECHNIQUES = V3_FEW_SHOT_FNS
+    # The bare form must keep competing even after its text has been seen,
+    # otherwise demonstrations are absorbing and the split collapses.
+    DEDUP_REVIVE = {"instruction_only"}
 
     STATIC_ARMS: List[str] = V3_STATIC
     BANDIT_ARMS: List[str] = V3_BANDIT
@@ -117,6 +205,11 @@ class FUNNELv3Optimizer(FUNNELv2Optimizer):
             return text
         parent_text = parent.text or ""
         if _EXAMPLES_MARKER not in parent_text or _EXAMPLES_MARKER in text:
+            return text
+        # `instruction_only` strips demonstrations on purpose; repairing it
+        # would cancel the operator out and collapse the split it exists to
+        # maintain. Recognised by the output being exactly the bare parent.
+        if text.strip() == _strip_examples(parent_text).strip():
             return text
         block = parent_text.split(_EXAMPLES_MARKER, 1)[1]
         if not block.strip():
