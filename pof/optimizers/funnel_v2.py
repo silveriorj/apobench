@@ -178,6 +178,22 @@ class FUNNELv2Optimizer(BaseOptimizer):
     STATIC_ARMS: List[str] = []
     BANDIT_ARMS: List[str] = FUNNEL_V2_POOL
 
+    def _invoke_operator(self, fn, name: str, elite: Optional[PromptRecord] = None):
+        """Run one operator and return (text, target_record).
+
+        The single place an operator is called, so a subclass can change how
+        operators see and write prompts without touching either call site.
+        `elite` forces a target; None lets the operator pick its own.
+        """
+        if elite is not None:
+            self._forced_elite = elite
+        try:
+            text = fn(self)
+        finally:
+            self._forced_elite = None
+        target = elite if elite is not None else getattr(self, "_last_elite", None)
+        return self._post_process(text, target), target
+
     def _post_process(self, text: Optional[str], parent: Optional[PromptRecord]) -> Optional[str]:
         """Hook applied to every operator's output before it becomes a record.
 
@@ -199,12 +215,7 @@ class FUNNELv2Optimizer(BaseOptimizer):
         for name in self.STATIC_ARMS:
             fn = self.EXTRA_TECHNIQUES.get(name) or _ALL_TECHNIQUE_FNS[name]
             for elite in self.population[: self.static_top_k]:
-                self._forced_elite = elite
-                try:
-                    text = fn(self)
-                finally:
-                    self._forced_elite = None
-                text = self._post_process(text, elite)
+                text, _ = self._invoke_operator(fn, name, elite)
                 if text and not self._is_duplicate(text):
                     candidates.append(self._create_record(
                         text, operator=name, parent_ids=[elite.id],
@@ -553,8 +564,7 @@ class FUNNELv2Optimizer(BaseOptimizer):
                 n_draws += 1
             produced = 0
             for _ in range(n_draws):
-                text = fn(self)
-                text = self._post_process(text, getattr(self, "_last_elite", None))
+                text, _ = self._invoke_operator(fn, name)
                 if text and not self._is_duplicate(text):
                     candidates.append(self._create_record(
                         text, operator=name,
