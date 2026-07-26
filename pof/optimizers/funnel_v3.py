@@ -51,7 +51,9 @@ import re
 from typing import List, Optional
 
 from pof.optimizers import register_optimizer
+from pof.optimizers.base import _GENERATE_SYSTEM_PROMPT
 from pof.optimizers._funnel_techniques import _pick_elite
+from pof.optimizers._funnel_v2_techniques import V2_TECHNIQUES
 from pof.optimizers.funnel_v2 import FUNNEL_V2_POOL, FUNNELv2Optimizer
 
 logger = logging.getLogger(__name__)
@@ -157,13 +159,59 @@ def t_instruction_only(opt) -> Optional[str]:
     return bare if bare and bare != record.text else None
 
 
-# Per elite: the bare instruction, one deterministic demonstration set, and one
-# randomized one. Swept over the top-3 elites every phase, so 9 candidates per
-# phase rather than 12.
+def t_facet_enrich(opt) -> Optional[str]:
+    """Decompose into GSPE's grammar and ADD a missing section.
+
+    A working replacement for `decompose_recompose`, which fired ZERO times
+    across six measured runs: it only triggers when a REQUIRED field
+    (task_definition / output_spec) is absent after decomposition, and the
+    decomposer essentially always emits both, so the operator is dead. This
+    version targets the OPTIONAL grammar fields instead — `reasoning_guide` and
+    `error_prevention` — which bare one-line instructions genuinely lack, so it
+    actually does structural work.
+
+    Kept in v3 only; the v2 pool retains the original so the running v2 sweep is
+    not perturbed.
+    """
+    record = _pick_elite(opt)
+    if not record:
+        return None
+    base = _strip_examples(record.text)
+    lowered = base.lower()
+    wanted = [
+        ("reasoning_guide", "how to work through the problem step by step"),
+        ("error_prevention", "the mistakes to avoid"),
+    ]
+    missing = [(f, d) for f, d in wanted if f.split("_")[0] not in lowered]
+    if not missing:
+        return None
+    field, desc = missing[0]
+    meta_prompt = (
+        f"Add a short section to this instruction covering {desc}. "
+        "Keep the original wording intact and append at most two sentences. "
+        "Output the complete revised instruction only.\n\n"
+        f"Instruction:\n{base}\n\n"
+        "Revised instruction:"
+    )
+    out = opt._generate_prompt(
+        meta_prompt, temperature=0.7, system_prompt=_GENERATE_SYSTEM_PROMPT
+    ).strip()
+    return out or None
+
+
+# Guaranteed sweep over the top-3 elites each phase.
+#
+# The demonstration split (bare / fixed / augmented) is free to generate — only
+# evaluation costs anything. The two decomposition operators are NOT free
+# (facet_edit costs 2 LLM calls, facet_enrich 1), and are guaranteed on the
+# evidence that facet_edit won 1 of its 12 generations across six measured runs
+# — the best hit rate of any operator observed, ahead of few_shot's 1 in 18.
 V3_FEW_SHOT_FNS = {
     "instruction_only": t_instruction_only,
     "few_shot_fixed": t_few_shot_fixed,
     "few_shot_aug": _augmented("aug"),
+    "facet_edit": V2_TECHNIQUES["facet_edit"],
+    "facet_enrich": t_facet_enrich,
 }
 
 V3_STATIC: List[str] = list(V3_FEW_SHOT_FNS)
