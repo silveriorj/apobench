@@ -419,6 +419,12 @@ def _extract_cot_answer(text: str) -> Optional[str]:
     if not text:
         return None
 
+    # Pattern: \boxed{<answer>} — used by the "thinking" system prompt, which
+    # explicitly asks for this format instead of "the answer is X".
+    boxed = _extract_boxed(text)
+    if boxed:
+        return boxed
+
     # Pattern: "the answer is <answer>" (most common in BBH/GSM8K CoT).
     # Use the LAST match — models sometimes self-correct ("So the answer is X — wait, no!")
     # and the final occurrence is the authoritative one.

@@ -45,6 +45,17 @@ _COT_EVAL_SYSTEM_PROMPT = (
     "(a single word, letter, or short phrase — nothing after it)."
 )
 
+# "Thinking" mode: full step-by-step reasoning, ending in \boxed{}. Unlike
+# _COT_EVAL_SYSTEM_PROMPT (brief one-line steps, "So the answer is X"), this
+# allows free-form reasoning and uses the \boxed{} convention shared with math
+# tasks. _extract_cot_answer tries \boxed{} first, so this and _score_auto's
+# MCQ/AO/text fallbacks compose without a dedicated score function.
+_THINKING_EVAL_SYSTEM_PROMPT = (
+    "Think through the problem step by step, then give your final answer. "
+    "End your response with \\boxed{X} where X is your final answer — "
+    "the option letter, word, or short phrase, nothing else inside the box."
+)
+
 # Dyck-n: bracket completion requires stack simulation — allow brief CoT.
 # Force the compact chain-of-thought-hub format (one line per symbol, no markdown)
 # so the simulation fits within the 512-token budget even for 50-symbol inputs.
@@ -82,6 +93,7 @@ class Evaluator:
             "math": _MATH_EVAL_SYSTEM_PROMPT,
             "code": _CODE_EVAL_SYSTEM_PROMPT,
             "cot": _COT_EVAL_SYSTEM_PROMPT,
+            "thinking": _THINKING_EVAL_SYSTEM_PROMPT,
             "dyck": _DYCK_EVAL_SYSTEM_PROMPT,
         }.get(task_type, _EVAL_SYSTEM_PROMPT)
         self.max_new_tokens = max_new_tokens
