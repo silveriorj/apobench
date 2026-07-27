@@ -263,6 +263,86 @@ class Evaluator:
             metadata={"racing_terminated": total < len(samples_to_use)},
         )
 
+    def evaluate_with_batch_racing(
+        self,
+        prompt: str,
+        samples: List[Dict[str, str]],
+        threshold: float,
+        confidence: float = 0.05,
+        min_batches: int = 1,
+    ) -> EvalResult:
+        """Batched evaluation with a Hoeffding-bound early stop between batches.
+
+        `evaluate_with_racing` checks the bound after every SAMPLE, which means
+        it cannot use `_batch_generate`'s batching — one generate call per
+        sample instead of one per `batch_size` samples. At FUNNEL's per-phase N
+        (22-88) that lost batching throughput usually costs more than early
+        elimination saves. This checks the bound between BATCHES instead,
+        keeping full batching throughput within each batch while still cutting
+        off a candidate that is already statistically unlikely to reach
+        `threshold` before it pays for the remaining batches.
+
+        Args:
+            threshold: score a candidate must plausibly reach to be worth
+                continuing to evaluate (typically the current population's
+                floor score, not a fixed baseline).
+            min_batches: batches to run before the bound check kicks in, so a
+                single unlucky first batch cannot eliminate a candidate.
+        """
+        config = GenerationConfig(
+            max_new_tokens=self.max_new_tokens,
+            temperature=self.temperature,
+            do_sample=self.temperature > 0,
+        )
+        performance_vector: List[int] = []
+        per_sample_details: List[Dict[str, Any]] = []
+        num_correct = 0
+        terminated = False
+
+        for batch_idx, i in enumerate(range(0, len(samples), self.batch_size), start=1):
+            batch = samples[i:i + self.batch_size]
+            eval_prompts = [
+                self._format_eval_prompt(prompt, s["input"]) for s in batch
+            ]
+            predictions = self.llm.generate_batch(
+                eval_prompts, config, system_prompt=self.system_prompt
+            )
+            for pred, sample in zip(predictions, batch):
+                target = sample["target"]
+                score = self.score_fn(pred, target)
+                performance_vector.append(score)
+                num_correct += score
+                per_sample_details.append({
+                    "input": sample["input"],
+                    "target": target,
+                    "prediction": pred,
+                    "correct": bool(score),
+                })
+
+            n = len(performance_vector)
+            if batch_idx >= min_batches and n < len(samples):
+                current_score = num_correct / n
+                bound = math.sqrt(math.log(2.0 / confidence) / (2 * n))
+                if current_score + bound < threshold:
+                    logger.info(
+                        f"[BatchRacing] eliminated at {n}/{len(samples)} samples "
+                        f"(score={current_score:.3f}+{bound:.3f} < "
+                        f"threshold={threshold:.3f})"
+                    )
+                    terminated = True
+                    break
+
+        total = len(performance_vector)
+        accuracy = num_correct / total if total > 0 else 0.0
+        return EvalResult(
+            score=accuracy,
+            num_correct=num_correct,
+            num_total=total,
+            performance_vector=performance_vector,
+            per_sample_details=per_sample_details,
+            metadata={"racing_terminated": terminated},
+        )
+
     def _batch_generate(
         self, prompts: List[str], config: GenerationConfig
     ) -> List[str]:
