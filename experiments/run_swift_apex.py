@@ -60,6 +60,11 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     "penguins_in_a_table": 32,  # kept for reference; not in the default matrix
     "reasoning_about_colored_objects": 32,
     "web_of_lies": 32,
+    # word_sorting answers are the full re-ordered word list (up to 20 words /
+    # ~180 chars observed), not a single letter/word -- 32 truncates it almost
+    # every time (measured: 3 completed runs at 32 tokens scored 0.21-0.28,
+    # consistent with truncation since this task scores by exact match).
+    "word_sorting": 192,
     # Other datasets
     "svamp": 256,  # 1-2 step arithmetic CoT: much shorter than GSM8K's 512
     "gsm8k": 512,  # kept for reference/opt-in; not in the default DATASETS matrix
