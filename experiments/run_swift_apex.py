@@ -122,7 +122,7 @@ DATASETS = {
             "hyperbaton",
             "logical_deduction_five_objects",
             "reasoning_about_colored_objects",
-            "web_of_lies",
+            "word_sorting",
         ],
         "task_type": "auto",
     },
