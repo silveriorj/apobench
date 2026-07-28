@@ -128,7 +128,7 @@ DATASETS = {
             "hyperbaton",
             "logical_deduction_five_objects",
             "reasoning_about_colored_objects",
-            "word_sorting",
+            "sports_understanding",
         ],
         "task_type": "auto",
     },
