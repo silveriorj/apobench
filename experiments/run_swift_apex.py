@@ -54,6 +54,7 @@ SEEDS = [42, 123, 7]
 # left thinking burns the whole budget and returns an empty answer.
 OLLAMA_MODELS: Dict[str, Dict[str, Any]] = {
     "qwen3.5:9b": {"base_url": "http://127.0.0.1:11435", "thinking_mode": False},
+    "qwen3.5:27b": {"base_url": "http://127.0.0.1:11435", "thinking_mode": False},
 }
 
 # Per-task eval max_new_tokens (eval output only; operator/LLM generation uses
@@ -92,6 +93,13 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
 
 # Default fallback when task is not listed above
 _DEFAULT_EVAL_MAX_NEW_TOKENS = 32
+
+# CoT/"thinking" mode (--cot flag): full step-by-step reasoning ending in
+# \boxed{}, via the "thinking" task_type built in evaluator.py. Per stored
+# guidance: generous headroom, well above the 1024 dyck previously used --
+# reasoning length before \boxed{} varies a lot and truncation silently kills
+# an otherwise-correct answer.
+COT_MAX_NEW_TOKENS = 1536
 
 # Per-task eval batch size.
 # Calibrated for DeepSeek-Coder-7B on 20 GB: MHA with 32 KV heads → ~512 KB/tok (32 layers).
@@ -179,14 +187,22 @@ def build_run_config(
     seed: int = 42,
     model_name: Optional[str] = None,
     output_root: str = "outputs/swift_apex_benchmark",
+    cot: bool = False,
 ) -> RunConfig:
     """Build a RunConfig for a specific method/dataset/task/model combination."""
     task_label = f"{dataset}_{task}" if task else dataset
     key = task or dataset
-    eval_max_tokens = EVAL_MAX_NEW_TOKENS.get(key, _DEFAULT_EVAL_MAX_NEW_TOKENS)
     eval_batch_size = EVAL_BATCH_SIZE.get(key, _DEFAULT_EVAL_BATCH_SIZE)
-    eval_task_type = EVAL_TASK_TYPE.get(key, "")
     eval_time_budget = EVAL_TIME_BUDGET.get(key, _DEFAULT_EVAL_TIME_BUDGET)
+    if cot:
+        # Uniform across every task/method in a --cot run: full reasoning,
+        # ending in \boxed{}, regardless of what the AO harness uses for the
+        # same task -- see evaluator.py's _THINKING_EVAL_SYSTEM_PROMPT.
+        eval_max_tokens = COT_MAX_NEW_TOKENS
+        eval_task_type = "thinking"
+    else:
+        eval_max_tokens = EVAL_MAX_NEW_TOKENS.get(key, _DEFAULT_EVAL_MAX_NEW_TOKENS)
+        eval_task_type = EVAL_TASK_TYPE.get(key, "")
     run_dir = f"{output_root}/{method}/{task_label}/seed_{seed}"
     if model_name:
         run_dir = f"{output_root}/{_model_slug(model_name)}/{method}/{task_label}/seed_{seed}"
@@ -248,6 +264,7 @@ def run_experiment(
     config_path: str = "experiments/configs/swift_apex_benchmark.yaml",
     output_dir: Optional[str] = None,
     dry_run: bool = False,
+    cot: bool = False,
 ):
     """Run the full experiment matrix with multiple seeds (and optionally models).
 
@@ -259,6 +276,12 @@ def run_experiment(
         models: HF model names to loop over. Defaults to the `models:` list in
             the YAML if present; otherwise the single llm.model_name is used.
         config_path: Path to base config YAML.
+        cot: If True, every task in this run uses full step-by-step reasoning
+            ending in \\boxed{} (task_type="thinking", COT_MAX_NEW_TOKENS)
+            instead of each task's normal answer-only settings, and seed
+            prompts load with their full worked CoT examples -- applied
+            uniformly across every method/task in the run, which is what
+            keeps it a fair comparison rather than a one-off tweak.
         output_dir: Root output directory. Overrides the YAML's output_dir.
         dry_run: If True, only print what would be run.
     """
@@ -324,12 +347,12 @@ def run_experiment(
 
             for task in ds_tasks:
                 # Fetch seed prompt (once per task, shared across seeds).
-                # BBH: instruction line only — full CoT examples conflict with the
-                # JSON system prompt, causing the model to output reasoning instead
-                # of {"answer": "X"}. dyck_languages now runs answer-only too (see
-                # EVAL_TASK_TYPE/EVAL_MAX_NEW_TOKENS notes above), so it no longer
-                # needs the full CoT-worked-example prompt either.
-                use_full = False
+                # BBH answer-only: instruction line only — full CoT examples
+                # conflict with the JSON system prompt, causing the model to
+                # output reasoning instead of {"answer": "X"}. --cot flips this:
+                # the whole run uses the "thinking" task_type, which wants (and
+                # was validated with) the full worked-example prompt.
+                use_full = cot
                 try:
                     seed_prompt = get_seed_prompt(dataset, task, use_full_prompt=use_full)
                     logger.info(f"Loaded seed prompt for {dataset}/{task} ({len(seed_prompt)} chars)")
@@ -370,6 +393,7 @@ def run_experiment(
                                 seed=seed,
                                 model_name=model,
                                 output_root=output_root,
+                                cot=cot,
                             )
 
                             from pof.orchestration.runner import RunOrchestrator
@@ -502,6 +526,14 @@ def main():
         "--dry-run", action="store_true",
         help="Print what would be run without executing",
     )
+    parser.add_argument(
+        "--cot", action="store_true",
+        help="Run every task in this invocation with full step-by-step "
+             "reasoning ending in \\boxed{} (task_type='thinking') instead of "
+             "each task's normal answer-only settings, seeded with the full "
+             "worked-example prompt. Applied uniformly to every method/task "
+             "passed, not per-task.",
+    )
 
     args = parser.parse_args()
 
@@ -514,6 +546,7 @@ def main():
         config_path=args.config,
         output_dir=args.output_dir,
         dry_run=args.dry_run,
+        cot=args.cot,
     )
 
 
