@@ -121,6 +121,40 @@ class FUNNELv4dOptimizer(FUNNELv4cOptimizer):
             f"{n_raced} raced-out)"
         )
 
+    def _step(self) -> List[PromptRecord]:
+        result = super()._step()
+        self._maybe_stop_if_perfect()
+        return result
+
+    def _maybe_stop_if_perfect(self) -> None:
+        """Stop early once the best candidate is a perfect match on dev.
+
+        Remaining phases only grow the sample the best candidate is scored on
+        (accumulating-fresh) -- if it is already at EM=1.0, there is no higher
+        score left to find; further phases would only re-confirm the same
+        result on more data at real GPU cost, which matters a lot more once
+        a "phase" is a batch of full CoT generations on an Ollama-served
+        model with no request parallelism (single-digit minutes per batch vs.
+        seconds on the HF/answer-only path this project mostly runs).
+        Checks raw EM (`scores["dev"]`), not the barrier-penalized selection
+        score, since a length penalty reducing `score` below 1.0 doesn't mean
+        there's a HIGHER-accuracy candidate still to find -- it means a
+        shorter answer might score marginally higher under the barrier, which
+        isn't what this check is for.
+        """
+        if not self.best_record:
+            return
+        em = self.best_record.scores.get("dev")
+        if em is not None and em >= 1.0:
+            note = (
+                f"perfect dev score (EM=1.0) reached after phase {self._phase_idx} "
+                f"-- stopping early, remaining phases would only re-confirm it on more data"
+            )
+            logger.info(f"[{self.name}] {note}")
+            self.tracker.add_note(note)
+            self._finalize()
+            raise StopIteration
+
 
 # Alias: same class, registered under the paper-facing name too. Both
 # "funnel_v4d" and "funnel_lean" resolve to FUNNELv4dOptimizer; results land
