@@ -43,7 +43,15 @@ def create_llm(config: Optional[LLMConfig] = None, **kwargs: Any) -> BaseLLM:
             api_key=config.api_key,
             base_url=config.base_url,
         )
+    elif backend == "ollama":
+        from pof.llm.ollama_backend import OllamaLLM
+
+        return OllamaLLM(
+            model_name=config.model_name,
+            base_url=config.base_url or "http://127.0.0.1:11434",
+            thinking_mode=config.thinking_mode,
+        )
     else:
         raise LLMError(
-            f"Unknown LLM backend: '{backend}'. Supported: 'huggingface', 'openai'"
+            f"Unknown LLM backend: '{backend}'. Supported: 'huggingface', 'openai', 'ollama'"
         )

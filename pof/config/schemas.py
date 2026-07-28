@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 class LLMConfig(BaseModel):
     """LLM backend configuration."""
 
-    backend: str = Field(default="huggingface", description="Backend: 'huggingface' or 'openai'")
+    backend: str = Field(default="huggingface", description="Backend: 'huggingface', 'openai', or 'ollama'")
     model_name: str = Field(default="Qwen/Qwen2.5-3B-Instruct", description="Model identifier")
     device: str = Field(default="auto", description="Device: 'auto', 'cuda', 'cpu'")
     dtype: str = Field(default="auto", description="Dtype: 'auto', 'float16', 'bfloat16'")
