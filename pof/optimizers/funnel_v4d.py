@@ -41,6 +41,14 @@ from pof.core.types import PromptRecord
 from pof.optimizers import register_optimizer
 from pof.optimizers.funnel_v4c import FUNNELv4cOptimizer
 
+# v4d is the best-performing FUNNEL variant measured to date (Qwen3-4B, 7
+# tasks common across the whole family): macro 0.715 vs. v4a's 0.701, v3's
+# 0.699, v2's 0.689, v1's 0.677 -- the best or tied-best on 5 of 7 tasks,
+# achieved with LESS guaranteed work per phase than v3/v4a (trimmed
+# decomposition family + batch-level racing). "FUNNEL-Lean" names that result
+# for use outside this codebase (papers, reports): best measured accuracy,
+# achieved cheaper, not despite being cheaper.
+
 logger = logging.getLogger(__name__)
 
 # Looser than the evaluator's 0.05 default: elimination only needs to be
@@ -112,3 +120,9 @@ class FUNNELv4dOptimizer(FUNNELv4cOptimizer):
             f"({n_full} full, {n_incr} incremental, {n_cached} cached, "
             f"{n_raced} raced-out)"
         )
+
+
+# Alias: same class, registered under the paper-facing name too. Both
+# "funnel_v4d" and "funnel_lean" resolve to FUNNELv4dOptimizer; results land
+# under whichever name is passed to run_swift_apex.py's --methods.
+register_optimizer("funnel_lean")(FUNNELv4dOptimizer)

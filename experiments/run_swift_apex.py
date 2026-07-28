@@ -38,10 +38,23 @@ logger = logging.getLogger(__name__)
 
 METHODS = ["swift", "apex", "capo", "gaapo", "see", "gepa",
            "swift_v2", "apex_v2", "funnel", "funnel_v2", "funnel_v3",
-           "funnel_v4a", "funnel_v4b", "funnel_v4c", "funnel_v4d"]  # Methods to run
+           "funnel_v4a", "funnel_v4b", "funnel_v4c", "funnel_v4d",
+           "funnel_lean"]  # Methods to run
 
 # Random seeds for statistical robustness (3 runs per configuration)
 SEEDS = [42, 123, 7]
+
+# Models served through Ollama instead of the HuggingFace/transformers stack.
+# base_url points at the user-local Ollama instance on t101 (port 11435,
+# separate from the stale system install on 11434). thinking_mode=False routes
+# through the native-API OllamaLLM backend, which is the only path that
+# actually disables a reasoning model's thinking trace -- Ollama's
+# OpenAI-compatible endpoint does not forward the `think` field, and at this
+# project's short answer-only eval budgets (32-64 tokens) a reasoning model
+# left thinking burns the whole budget and returns an empty answer.
+OLLAMA_MODELS: Dict[str, Dict[str, Any]] = {
+    "qwen3.5:9b": {"base_url": "http://127.0.0.1:11435", "thinking_mode": False},
+}
 
 # Per-task eval max_new_tokens (eval output only; operator/LLM generation uses
 # llm.max_new_tokens from the YAML, which stays at 512).
@@ -144,8 +157,12 @@ DATASETS = {
 
 
 def _model_slug(model_name: str) -> str:
-    """Filesystem-safe short name for a model, e.g. Qwen/Qwen3-0.6B → qwen3-0.6b."""
-    return model_name.split("/")[-1].lower()
+    """Filesystem-safe short name for a model, e.g. Qwen/Qwen3-0.6B → qwen3-0.6b.
+
+    Ollama tags use "name:tag" (e.g. "qwen3.5:9b") -- ":" is invalid in
+    Windows paths, and results get synced there, so it's replaced too.
+    """
+    return model_name.split("/")[-1].lower().replace(":", "-")
 
 
 def build_run_config(
@@ -188,7 +205,14 @@ def build_run_config(
         "output_dir": run_dir,
     }
     if model_name:
-        overrides["llm"] = {"model_name": model_name}
+        if model_name in OLLAMA_MODELS:
+            overrides["llm"] = {
+                "model_name": model_name,
+                "backend": "ollama",
+                **OLLAMA_MODELS[model_name],
+            }
+        else:
+            overrides["llm"] = {"model_name": model_name}
     return load_config(base_config_path, overrides=overrides)
 
 
