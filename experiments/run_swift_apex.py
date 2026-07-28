@@ -58,12 +58,17 @@ OLLAMA_MODELS: Dict[str, Dict[str, Any]] = {
 
 # Per-task eval max_new_tokens (eval output only; operator/LLM generation uses
 # llm.max_new_tokens from the YAML, which stays at 512).
-# dyck uses _DYCK_EVAL_SYSTEM_PROMPT (CoT allowed) — needs 200+ tokens for stack sim.
+# dyck previously used _DYCK_EVAL_SYSTEM_PROMPT (CoT allowed, 1024 tokens) --
+# switched to answer-only like every other BBH task: at a 2h/task budget, the
+# CoT variant costs ~6h for a full 3-seed run on a 9B Ollama model (no request
+# batching there, -np 1). Full CoT for dyck is deferred to the separate
+# "thinking" task_type batch (see evaluator.py's _THINKING_EVAL_SYSTEM_PROMPT)
+# instead of being mixed into this answer-only exploration pass.
 # MCQ/boolean/color tasks: single word/letter → 16 is sufficient.
 # SVAMP/HumanEval use different system prompts that allow CoT/code output.
 EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
-    # BBH — 32 tokens: sufficient for JSON {"answer": "X"} with no CoT.
-    "dyck_languages": 1024,  # stack CoT: up to ~30 steps × 12 tok + conclusion ≈ 430 tok
+    # BBH — 32-64 tokens: sufficient for JSON {"answer": "X"} with no CoT.
+    "dyck_languages": 64,
     "boolean_expressions": 32,
     "causal_judgement": 32,
     "disambiguation_qa": 32,
@@ -125,10 +130,10 @@ _DEFAULT_EVAL_TIME_BUDGET = 7200  # BBH tasks
 
 # Per-task evaluator task_type override.
 # Empty string means auto-detect from dataset samples (default for most BBH tasks).
-# "dyck" routes to _DYCK_EVAL_SYSTEM_PROMPT in evaluator.py (brief CoT + bracket answer).
-EVAL_TASK_TYPE: Dict[str, str] = {
-    "dyck_languages": "dyck",
-}
+# dyck_languages previously mapped to "dyck" (_DYCK_EVAL_SYSTEM_PROMPT, brief
+# CoT + bracket answer) -- now runs answer-only like every other task; see the
+# EVAL_MAX_NEW_TOKENS note above.
+EVAL_TASK_TYPE: Dict[str, str] = {}
 
 # Dataset configurations
 DATASETS = {
@@ -321,9 +326,10 @@ def run_experiment(
                 # Fetch seed prompt (once per task, shared across seeds).
                 # BBH: instruction line only — full CoT examples conflict with the
                 # JSON system prompt, causing the model to output reasoning instead
-                # of {"answer": "X"}. Exception: dyck needs its 3 worked examples
-                # to teach the stack-simulation format.
-                use_full = task == "dyck_languages"
+                # of {"answer": "X"}. dyck_languages now runs answer-only too (see
+                # EVAL_TASK_TYPE/EVAL_MAX_NEW_TOKENS notes above), so it no longer
+                # needs the full CoT-worked-example prompt either.
+                use_full = False
                 try:
                     seed_prompt = get_seed_prompt(dataset, task, use_full_prompt=use_full)
                     logger.info(f"Loaded seed prompt for {dataset}/{task} ({len(seed_prompt)} chars)")
