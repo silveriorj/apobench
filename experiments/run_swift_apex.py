@@ -101,6 +101,16 @@ _DEFAULT_EVAL_MAX_NEW_TOKENS = 32
 # an otherwise-correct answer.
 COT_MAX_NEW_TOKENS = 1536
 
+# Brief CoT (--cot-brief flag): "cot" task_type -- one-line-per-step
+# reasoning, no prose, ending in "So the answer is X" (see
+# _COT_EVAL_SYSTEM_PROMPT in evaluator.py, originally built for GSM8K, never
+# wired in here). The hypothesis this exists to check: does most of full
+# CoT's accuracy gain survive on a much shorter, much faster generation --
+# the same motivation as capping thinking to 64 tokens for word_sorting, just
+# applied to reasoning instead of the final answer. 256 tokens is generous
+# for one-line-per-step on BBH-scale problems (rarely more than ~15 steps).
+COT_BRIEF_MAX_NEW_TOKENS = 256
+
 # Per-task eval batch size.
 # Calibrated for DeepSeek-Coder-7B on 20 GB: MHA with 32 KV heads → ~512 KB/tok (32 layers).
 # Model weights ~14 GB, leaving ~5 GB. BBH tasks fit at batch=8; gsm8k at 4; humaneval at 2.
@@ -187,19 +197,29 @@ def build_run_config(
     seed: int = 42,
     model_name: Optional[str] = None,
     output_root: str = "outputs/swift_apex_benchmark",
-    cot: bool = False,
+    cot_mode: str = "",
 ) -> RunConfig:
-    """Build a RunConfig for a specific method/dataset/task/model combination."""
+    """Build a RunConfig for a specific method/dataset/task/model combination.
+
+    cot_mode: "" (answer-only, per-task defaults), "full" (free-form
+        reasoning ending in \\boxed{}, task_type="thinking"), or "brief"
+        (one-line-per-step reasoning ending in "So the answer is X",
+        task_type="cot" -- much shorter generations, checks whether most of
+        full CoT's accuracy gain survives without paying for a long trace).
+    """
     task_label = f"{dataset}_{task}" if task else dataset
     key = task or dataset
     eval_batch_size = EVAL_BATCH_SIZE.get(key, _DEFAULT_EVAL_BATCH_SIZE)
     eval_time_budget = EVAL_TIME_BUDGET.get(key, _DEFAULT_EVAL_TIME_BUDGET)
-    if cot:
+    if cot_mode == "full":
         # Uniform across every task/method in a --cot run: full reasoning,
         # ending in \boxed{}, regardless of what the AO harness uses for the
         # same task -- see evaluator.py's _THINKING_EVAL_SYSTEM_PROMPT.
         eval_max_tokens = COT_MAX_NEW_TOKENS
         eval_task_type = "thinking"
+    elif cot_mode == "brief":
+        eval_max_tokens = COT_BRIEF_MAX_NEW_TOKENS
+        eval_task_type = "cot"
     else:
         eval_max_tokens = EVAL_MAX_NEW_TOKENS.get(key, _DEFAULT_EVAL_MAX_NEW_TOKENS)
         eval_task_type = EVAL_TASK_TYPE.get(key, "")
@@ -264,7 +284,7 @@ def run_experiment(
     config_path: str = "experiments/configs/swift_apex_benchmark.yaml",
     output_dir: Optional[str] = None,
     dry_run: bool = False,
-    cot: bool = False,
+    cot_mode: str = "",
 ):
     """Run the full experiment matrix with multiple seeds (and optionally models).
 
@@ -276,11 +296,11 @@ def run_experiment(
         models: HF model names to loop over. Defaults to the `models:` list in
             the YAML if present; otherwise the single llm.model_name is used.
         config_path: Path to base config YAML.
-        cot: If True, every task in this run uses full step-by-step reasoning
-            ending in \\boxed{} (task_type="thinking", COT_MAX_NEW_TOKENS)
-            instead of each task's normal answer-only settings, and seed
-            prompts load with their full worked CoT examples -- applied
-            uniformly across every method/task in the run, which is what
+        cot_mode: "" (default, answer-only), "full" (free-form reasoning
+            ending in \\boxed{}), or "brief" (one-line-per-step reasoning,
+            much shorter generations -- see build_run_config). Applied
+            uniformly across every method/task in the run and loads the full
+            worked-example seed prompt for either CoT mode, which is what
             keeps it a fair comparison rather than a one-off tweak.
         output_dir: Root output directory. Overrides the YAML's output_dir.
         dry_run: If True, only print what would be run.
@@ -329,7 +349,12 @@ def run_experiment(
                 for task in ds_tasks:
                     for method in methods:
                         task_label = f"{dataset}/{task}" if task else dataset
-                        eval_tok = EVAL_MAX_NEW_TOKENS.get(task or dataset, _DEFAULT_EVAL_MAX_NEW_TOKENS)
+                        if cot_mode == "full":
+                            eval_tok = COT_MAX_NEW_TOKENS
+                        elif cot_mode == "brief":
+                            eval_tok = COT_BRIEF_MAX_NEW_TOKENS
+                        else:
+                            eval_tok = EVAL_MAX_NEW_TOKENS.get(task or dataset, _DEFAULT_EVAL_MAX_NEW_TOKENS)
                         logger.info(
                             f"  [{model or 'default'}] {method} on {task_label} "
                             f"(eval_max_tokens={eval_tok}, seeds={seeds})"
@@ -349,10 +374,10 @@ def run_experiment(
                 # Fetch seed prompt (once per task, shared across seeds).
                 # BBH answer-only: instruction line only — full CoT examples
                 # conflict with the JSON system prompt, causing the model to
-                # output reasoning instead of {"answer": "X"}. --cot flips this:
-                # the whole run uses the "thinking" task_type, which wants (and
-                # was validated with) the full worked-example prompt.
-                use_full = cot
+                # output reasoning instead of {"answer": "X"}. Either CoT mode
+                # flips this: the whole run uses a CoT task_type, which wants
+                # (and was validated with) the full worked-example prompt.
+                use_full = bool(cot_mode)
                 try:
                     seed_prompt = get_seed_prompt(dataset, task, use_full_prompt=use_full)
                     logger.info(f"Loaded seed prompt for {dataset}/{task} ({len(seed_prompt)} chars)")
@@ -393,7 +418,7 @@ def run_experiment(
                                 seed=seed,
                                 model_name=model,
                                 output_root=output_root,
-                                cot=cot,
+                                cot_mode=cot_mode,
                             )
 
                             from pof.orchestration.runner import RunOrchestrator
@@ -532,10 +557,21 @@ def main():
              "reasoning ending in \\boxed{} (task_type='thinking') instead of "
              "each task's normal answer-only settings, seeded with the full "
              "worked-example prompt. Applied uniformly to every method/task "
-             "passed, not per-task.",
+             "passed, not per-task. Mutually exclusive with --cot-brief.",
+    )
+    parser.add_argument(
+        "--cot-brief", action="store_true",
+        help="Like --cot, but one-line-per-step reasoning ending in 'So the "
+             "answer is X' (task_type='cot') instead of free-form reasoning "
+             "ending in \\boxed{} -- much shorter generations. Checks whether "
+             "most of full CoT's accuracy gain survives without paying for a "
+             "long trace. Mutually exclusive with --cot.",
     )
 
     args = parser.parse_args()
+    if args.cot and args.cot_brief:
+        parser.error("--cot and --cot-brief are mutually exclusive")
+    cot_mode = "full" if args.cot else "brief" if args.cot_brief else ""
 
     run_experiment(
         methods=args.methods,
@@ -546,7 +582,7 @@ def main():
         config_path=args.config,
         output_dir=args.output_dir,
         dry_run=args.dry_run,
-        cot=args.cot,
+        cot_mode=cot_mode,
     )
 
 
