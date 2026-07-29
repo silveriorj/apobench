@@ -67,6 +67,20 @@ _DYCK_EVAL_SYSTEM_PROMPT = (
 )
 
 
+# task_type -> system prompt, shared between Evaluator's own default and any
+# caller that needs to route a SPECIFIC call to a different mode than the
+# instance default (see evaluate()'s system_prompt_override) -- e.g. an
+# optimizer searching across AO/CoT/thinking as a candidate-level property
+# rather than a fixed per-run setting.
+SYSTEM_PROMPT_BY_TASK_TYPE: Dict[str, str] = {
+    "math": _MATH_EVAL_SYSTEM_PROMPT,
+    "code": _CODE_EVAL_SYSTEM_PROMPT,
+    "cot": _COT_EVAL_SYSTEM_PROMPT,
+    "thinking": _THINKING_EVAL_SYSTEM_PROMPT,
+    "dyck": _DYCK_EVAL_SYSTEM_PROMPT,
+}
+
+
 class Evaluator:
     """Evaluate prompts against task samples with optional racing.
 
@@ -89,13 +103,7 @@ class Evaluator:
         self.llm = llm
         self.score_fn = score_fn or create_score_function(task_type)
         self.task_type = task_type
-        self.system_prompt = {
-            "math": _MATH_EVAL_SYSTEM_PROMPT,
-            "code": _CODE_EVAL_SYSTEM_PROMPT,
-            "cot": _COT_EVAL_SYSTEM_PROMPT,
-            "thinking": _THINKING_EVAL_SYSTEM_PROMPT,
-            "dyck": _DYCK_EVAL_SYSTEM_PROMPT,
-        }.get(task_type, _EVAL_SYSTEM_PROMPT)
+        self.system_prompt = SYSTEM_PROMPT_BY_TASK_TYPE.get(task_type, _EVAL_SYSTEM_PROMPT)
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.batch_size = batch_size
@@ -106,6 +114,8 @@ class Evaluator:
         samples: List[Dict[str, str]],
         num_samples: Optional[int] = None,
         shuffle: bool = True,
+        system_prompt_override: Optional[str] = None,
+        max_new_tokens_override: Optional[int] = None,
     ) -> EvalResult:
         """Evaluate a prompt on a set of samples.
 
@@ -114,6 +124,15 @@ class Evaluator:
             samples: List of dicts with 'input' and 'target' keys.
             num_samples: Max samples to evaluate (None = all).
             shuffle: Whether to shuffle samples before evaluation.
+            system_prompt_override: Use this system prompt instead of the
+                instance default for this call only. For an optimizer
+                searching across eval modes (AO/CoT/thinking) as a
+                candidate-level property rather than one fixed per-run
+                setting -- see SYSTEM_PROMPT_BY_TASK_TYPE.
+            max_new_tokens_override: Use this token budget instead of the
+                instance default for this call only (pair with
+                system_prompt_override -- a CoT-style prompt needs far more
+                room than the instance's answer-only default).
 
         Returns:
             EvalResult with score, performance vector, and details.
@@ -124,8 +143,11 @@ class Evaluator:
             else:
                 samples = samples[:num_samples]
 
+        system_prompt = system_prompt_override if system_prompt_override is not None else self.system_prompt
+        max_new_tokens = max_new_tokens_override if max_new_tokens_override is not None else self.max_new_tokens
+
         config = GenerationConfig(
-            max_new_tokens=self.max_new_tokens,
+            max_new_tokens=max_new_tokens,
             temperature=self.temperature,
             do_sample=self.temperature > 0,
         )
@@ -133,7 +155,7 @@ class Evaluator:
         n_batches = math.ceil(len(samples) / self.batch_size)
         logger.debug(
             f"[Eval] {len(samples)} samples | batch_size={self.batch_size}"
-            f" → {n_batches} batch(es) | max_tokens={self.max_new_tokens}"
+            f" → {n_batches} batch(es) | max_tokens={max_new_tokens}"
         )
 
         eval_prompts = [
@@ -141,7 +163,7 @@ class Evaluator:
             for sample in samples
         ]
 
-        predictions = self._batch_generate(eval_prompts, config)
+        predictions = self._batch_generate(eval_prompts, config, system_prompt=system_prompt)
 
         # Score
         performance_vector = []
@@ -270,6 +292,8 @@ class Evaluator:
         threshold: float,
         confidence: float = 0.05,
         min_batches: int = 1,
+        system_prompt_override: Optional[str] = None,
+        max_new_tokens_override: Optional[int] = None,
     ) -> EvalResult:
         """Batched evaluation with a Hoeffding-bound early stop between batches.
 
@@ -289,8 +313,10 @@ class Evaluator:
             min_batches: batches to run before the bound check kicks in, so a
                 single unlucky first batch cannot eliminate a candidate.
         """
+        system_prompt = system_prompt_override if system_prompt_override is not None else self.system_prompt
+        max_new_tokens = max_new_tokens_override if max_new_tokens_override is not None else self.max_new_tokens
         config = GenerationConfig(
-            max_new_tokens=self.max_new_tokens,
+            max_new_tokens=max_new_tokens,
             temperature=self.temperature,
             do_sample=self.temperature > 0,
         )
@@ -305,7 +331,7 @@ class Evaluator:
                 self._format_eval_prompt(prompt, s["input"]) for s in batch
             ]
             predictions = self.llm.generate_batch(
-                eval_prompts, config, system_prompt=self.system_prompt
+                eval_prompts, config, system_prompt=system_prompt
             )
             for pred, sample in zip(predictions, batch):
                 target = sample["target"]
@@ -344,7 +370,8 @@ class Evaluator:
         )
 
     def _batch_generate(
-        self, prompts: List[str], config: GenerationConfig
+        self, prompts: List[str], config: GenerationConfig,
+        system_prompt: Optional[str] = None,
     ) -> List[str]:
         """Generate predictions in batches for efficiency."""
         all_predictions = []
@@ -354,7 +381,7 @@ class Evaluator:
             batch = prompts[i: i + self.batch_size]
             logger.debug(f"[Eval] batch {batch_idx}/{n_batches} (samples {i+1}–{i+len(batch)}/{total})")
             predictions = self.llm.generate_batch(
-                batch, config, system_prompt=self.system_prompt
+                batch, config, system_prompt=system_prompt if system_prompt is not None else self.system_prompt
             )
             all_predictions.extend(predictions)
         return all_predictions

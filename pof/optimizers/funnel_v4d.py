@@ -65,6 +65,15 @@ class FUNNELv4dOptimizer(FUNNELv4cOptimizer):
 
     name = "funnel_v4d"
 
+    def _eval_overrides(self, record: PromptRecord):
+        """(system_prompt_override, max_new_tokens_override) for one record.
+
+        (None, None) here -- use the evaluator's own per-run defaults.
+        Overridden by funnel_v5 to route each record through the eval mode
+        stored in its own metadata rather than one fixed per-run setting.
+        """
+        return None, None
+
     def _evaluate_phase(self, candidates: List[PromptRecord], phase: int) -> None:
         n_target = self._phase_sizes[min(phase, len(self._phase_sizes) - 1)]
         threshold = None
@@ -78,6 +87,7 @@ class FUNNELv4dOptimizer(FUNNELv4cOptimizer):
                 continue
             cached = list(record.per_sample_details or [])
             have = len(cached)
+            sp_override, tok_override = self._eval_overrides(record)
 
             if have >= n_target:
                 details = cached[:n_target]
@@ -90,13 +100,17 @@ class FUNNELv4dOptimizer(FUNNELv4cOptimizer):
                     res = self.evaluator.evaluate_with_batch_racing(
                         record.text, increment, threshold=threshold,
                         confidence=RACING_CONFIDENCE, min_batches=RACING_MIN_BATCHES,
+                        system_prompt_override=sp_override, max_new_tokens_override=tok_override,
                     )
                     if res.metadata.get("racing_terminated"):
                         n_raced += 1
                     else:
                         n_full += 1
                 else:
-                    res = self.evaluator.evaluate(record.text, increment)
+                    res = self.evaluator.evaluate(
+                        record.text, increment,
+                        system_prompt_override=sp_override, max_new_tokens_override=tok_override,
+                    )
                     if have == 0:
                         n_full += 1
                     else:
