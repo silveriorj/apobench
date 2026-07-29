@@ -43,6 +43,16 @@ names. Sources, and what each contributes that v1 lacks:
   that missing half: feedback aggregated per facet, proposing add/edit/delete
   at section granularity. `t_facet_edit` below is the combination.
 
+- **CRISPO** (Zhang et al., 2024): critiques failures along several NAMED
+  aspects independently, rather than one holistic pass. `strago_dual`
+  already reads both correct and incorrect cases, but produces a single
+  blended 3-5 sentence strategy — a precise, fixable issue about (say)
+  output-format compliance can get buried under general commentary about
+  reasoning approach. `t_multi_aspect_critique` below scores each aspect
+  separately first, then rewrites addressing only the aspects that actually
+  flagged a problem, which is what CRISPO's ablations report as the source
+  of its improvement over single-pass critique.
+
 Every function has signature `(opt) -> Optional[str]` matching the v1 pool,
 so both pools compose into one UCB1 arm set.
 """
@@ -174,6 +184,73 @@ def t_strago_dual(opt) -> Optional[str]:
         "the new instruction.\n\n"
         f"Current instruction:\n{record.text}\n\n"
         f"Strategy:\n{strategy.strip()}\n\n"
+        "Improved instruction:"
+    )
+    result = opt._generate_prompt(
+        rewrite_prompt, temperature=0.7, system_prompt=_IMPROVE_SYSTEM_PROMPT
+    )
+    return result.strip() or None
+
+
+# --- CRISPO: multi-aspect critique ---
+
+# Named independently so the critique step can't blend a precise, fixable
+# issue on one axis into vague commentary about another. Chosen for
+# short-answer BBH-style tasks specifically, not CRISPO's original
+# style/precision/content-alignment triad (built for longer generative
+# outputs where "style" is meaningful; not here).
+_CRITIQUE_ASPECTS: List[str] = [
+    "answer_format",       # does the instruction make the required output format unambiguous?
+    "reasoning_approach",  # does it point at the right method/strategy for the task?
+    "edge_case_handling",  # does it address the specific edge cases these failures show?
+    "instruction_clarity", # is any part of it ambiguous or missing necessary detail?
+]
+
+
+def t_multi_aspect_critique(opt) -> Optional[str]:
+    """Critique failures along named aspects independently, then rewrite.
+
+    One structured critique call (all aspects at once, each scored
+    independently) plus one rewrite call -- same 2-call cost as
+    `strago_dual`, but the critique can't let a precise fixable issue on one
+    aspect get buried under general commentary about another, which is what
+    CRISPO's ablations report as the source of its improvement over
+    single-pass critique.
+    """
+    record = _pick_elite(opt)
+    if not record:
+        return None
+    details = _ensure_details(opt, record)
+    failures = [d for d in details if not d.get("correct")] if details else []
+    if not failures:
+        return None
+
+    aspect_list = "\n".join(f"- {a}" for a in _CRITIQUE_ASPECTS)
+    critique_prompt = (
+        "Below are cases where an instruction produced wrong answers. "
+        "Evaluate the instruction against EACH of these aspects independently:\n"
+        f"{aspect_list}\n\n"
+        "For each aspect, either write 'N/A' (this aspect is not the "
+        "problem) or a single specific, actionable sentence describing "
+        "exactly what to change. Do not blend aspects together — keep each "
+        "one's issue (or N/A) separate and attributed to its own aspect "
+        "name.\n\n"
+        f"Failing cases:\n{_format_cases(failures, n=8)}\n\n"
+        "Per-aspect critique:"
+    )
+    critique = opt._generate_prompt(
+        critique_prompt, temperature=0.4, system_prompt=_CRITIQUE_SYSTEM_PROMPT
+    )
+    if not critique.strip():
+        return None
+
+    rewrite_prompt = (
+        "Rewrite the instruction to fix ONLY the aspects below that flagged "
+        "a real problem (skip any marked N/A). Address each flagged aspect "
+        "with a concrete change; do not touch parts of the instruction the "
+        "critique didn't flag. Output only the new instruction.\n\n"
+        f"Current instruction:\n{record.text}\n\n"
+        f"Per-aspect critique:\n{critique.strip()}\n\n"
         "Improved instruction:"
     )
     result = opt._generate_prompt(
@@ -458,6 +535,7 @@ def t_decompose_recompose(opt) -> Optional[str]:
 V2_TECHNIQUES: Dict[str, Callable] = {
     "etgpo_taxonomy": t_etgpo_taxonomy,
     "strago_dual": t_strago_dual,
+    "multi_aspect_critique": t_multi_aspect_critique,
     "autohint": t_autohint,
     "grips_delete": t_grips_delete,
     "grips_swap": t_grips_swap,

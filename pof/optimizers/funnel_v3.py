@@ -224,7 +224,7 @@ V3_STATIC: List[str] = list(V3_FEW_SHOT_FNS)
 # elites, the arm can still reach elsewhere in the population.
 V3_BANDIT: List[str] = list(FUNNEL_V2_POOL)
 
-assert len(V3_BANDIT) == 20, f"expected 20 bandit arms, got {len(V3_BANDIT)}"
+assert len(V3_BANDIT) == 21, f"expected 21 bandit arms, got {len(V3_BANDIT)}"
 
 
 @register_optimizer("funnel_v3")

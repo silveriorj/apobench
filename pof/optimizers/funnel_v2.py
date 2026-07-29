@@ -73,9 +73,9 @@ logger = logging.getLogger(__name__)
 # population and generates from raw I/O pairs), so it belongs in init, not in
 # the per-iteration arm set.
 _HEAVY = [
-    "etgpo_taxonomy", "strago_dual", "autohint", "ampo_branch",
-    "facet_edit", "structured_failure_guided", "reflective_mutation",
-    "expert_refine",
+    "etgpo_taxonomy", "strago_dual", "multi_aspect_critique", "autohint",
+    "ampo_branch", "facet_edit", "structured_failure_guided",
+    "reflective_mutation", "expert_refine",
 ]
 _CHEAP = [
     "grips_add", "grips_paraphrase", "local_edit", "semantic_var",
@@ -96,9 +96,9 @@ BANDIT_POOL: List[str] = [t for t in FUNNEL_V2_POOL if t not in STATIC_CORE]
 
 _ALL_TECHNIQUE_FNS: Dict[str, object] = {**V1_TECHNIQUES, **V2_TECHNIQUES}
 
-assert len(FUNNEL_V2_POOL) == 20, f"expected 20 operators, got {len(FUNNEL_V2_POOL)}"
+assert len(FUNNEL_V2_POOL) == 21, f"expected 21 operators, got {len(FUNNEL_V2_POOL)}"
 assert all(t in FUNNEL_V2_POOL for t in STATIC_CORE), "static core must be in the pool"
-assert len(BANDIT_POOL) == 17, f"expected 17 bandit arms, got {len(BANDIT_POOL)}"
+assert len(BANDIT_POOL) == 18, f"expected 18 bandit arms, got {len(BANDIT_POOL)}"
 assert all(t in _ALL_TECHNIQUE_FNS for t in FUNNEL_V2_POOL), (
     "pool references an unknown technique: "
     f"{[t for t in FUNNEL_V2_POOL if t not in _ALL_TECHNIQUE_FNS]}"
