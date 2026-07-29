@@ -69,6 +69,8 @@ from pof.optimizers.base import (
 )
 from pof.optimizers._funnel_techniques import _ensure_details, _pick_elite, _split_sentences
 
+
+
 # GSPE's prompt grammar (gspe.py PROMPT_GRAMMAR), reused so FUNNELv2's
 # decomposition is directly comparable to GSPE's rather than a parallel
 # invention. Descriptions kept verbatim; the token hints are advisory.
@@ -257,6 +259,49 @@ def t_multi_aspect_critique(opt) -> Optional[str]:
         rewrite_prompt, temperature=0.7, system_prompt=_IMPROVE_SYSTEM_PROMPT
     )
     return result.strip() or None
+
+
+# --- Textual momentum: trend-directed trajectory ---
+
+def t_trajectory_momentum(opt) -> Optional[str]:
+    """OPRO-style ranked history, but asks for a TREND, not just "beat the max".
+
+    `t_trajectory` (v1 pool) already does OPRO's core mechanism: show
+    (instruction, score) pairs ranked ascending, ask for something that beats
+    the max. What it doesn't do is ask the model to identify WHAT actually
+    differs between the low- and high-scoring versions before extrapolating
+    -- it's free to try something unrelated to the pattern that's already
+    working. This adds that explicit trend-identification step (TextGrad's
+    "momentum": condition the next edit on the DIRECTION of recent
+    improvement, not just the destination) in one combined call, so the
+    generated instruction continues a trend already validated by the
+    population instead of a fresh, unrelated guess.
+    """
+    if len(opt.population) < 3:
+        return None
+    ranked = sorted(opt.population, key=lambda r: r.score)
+    context = "\n".join(f"Score: {r.score:.3f}\nInstruction: {r.text}\n" for r in ranked)
+    meta_prompt = (
+        "Below are instructions for the same task, sorted by score "
+        "(ascending). First, identify the SPECIFIC differences between the "
+        "lower-scoring and higher-scoring instructions -- what changed that "
+        "correlates with the score going up. Then write a NEW instruction "
+        "that continues that same trend further, rather than trying "
+        "something unrelated. It must score higher than all of the above.\n\n"
+        f"Instructions and scores:\n{context}\n\n"
+        "Briefly state the trend, then give the new instruction on its own "
+        "line prefixed with 'INSTRUCTION:'."
+    )
+    result = opt._generate_prompt(meta_prompt, temperature=0.7, system_prompt=_GENERATE_SYSTEM_PROMPT)
+    if not result.strip():
+        return None
+    # Prefer the explicitly marked line; fall back to the whole response if
+    # the model didn't follow the marker (still usable, just untrimmed).
+    for line in result.splitlines():
+        if line.strip().upper().startswith("INSTRUCTION:"):
+            tail = line.split(":", 1)[1].strip()
+            return tail or None
+    return result.strip()
 
 
 # --- AutoHint: aggregated hint synthesis ---
@@ -536,6 +581,7 @@ V2_TECHNIQUES: Dict[str, Callable] = {
     "etgpo_taxonomy": t_etgpo_taxonomy,
     "strago_dual": t_strago_dual,
     "multi_aspect_critique": t_multi_aspect_critique,
+    "trajectory_momentum": t_trajectory_momentum,
     "autohint": t_autohint,
     "grips_delete": t_grips_delete,
     "grips_swap": t_grips_swap,

@@ -164,6 +164,7 @@ class Evaluator:
         ]
 
         predictions = self._batch_generate(eval_prompts, config, system_prompt=system_prompt)
+        predictions = self._retry_empty(eval_prompts, predictions, config, system_prompt)
 
         # Score
         performance_vector = []
@@ -333,6 +334,7 @@ class Evaluator:
             predictions = self.llm.generate_batch(
                 eval_prompts, config, system_prompt=system_prompt
             )
+            predictions = self._retry_empty(eval_prompts, predictions, config, system_prompt)
             for pred, sample in zip(predictions, batch):
                 target = sample["target"]
                 score = self.score_fn(pred, target)
@@ -385,6 +387,46 @@ class Evaluator:
             )
             all_predictions.extend(predictions)
         return all_predictions
+
+    def _retry_empty(
+        self,
+        eval_prompts: List[str],
+        predictions: List[str],
+        config: GenerationConfig,
+        system_prompt: Optional[str],
+    ) -> List[str]:
+        """LM-Assertion-style hard constraint: an eval call must produce SOME
+        answer. Retry just the empty ones once, with the violation appended.
+
+        Motivated by a real failure observed this session: a reasoning model
+        under a tight token budget spent its whole budget "thinking" and
+        returned an empty answer field -- not wrong, just absent, which
+        `score_fn` scores identically to any other wrong answer even though
+        it's a distinct failure mode (format/budget violation, not a
+        reasoning error) that a one-line correction can often fix.
+        """
+        empty_idx = [i for i, p in enumerate(predictions) if not (p or "").strip()]
+        if not empty_idx:
+            return predictions
+
+        retry_prompts = [
+            f"{eval_prompts[i]}\n\n"
+            "(Your previous response was empty. You MUST provide an answer "
+            "in the required format -- do not leave it blank.)"
+            for i in empty_idx
+        ]
+        system_prompt = system_prompt if system_prompt is not None else self.system_prompt
+        retried = self.llm.generate_batch(retry_prompts, config, system_prompt=system_prompt)
+        n_recovered = sum(1 for r in retried if (r or "").strip())
+        if n_recovered:
+            logger.info(
+                f"[Eval] retried {len(empty_idx)} empty response(s), "
+                f"recovered {n_recovered}"
+            )
+        out = list(predictions)
+        for i, r in zip(empty_idx, retried):
+            out[i] = r
+        return out
 
     def _format_eval_prompt(self, instruction: str, input_text: str) -> str:
         """Format evaluation prompt combining instruction and input."""

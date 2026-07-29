@@ -79,7 +79,8 @@ _HEAVY = [
 ]
 _CHEAP = [
     "grips_add", "grips_paraphrase", "local_edit", "semantic_var",
-    "few_shot", "crossover", "trajectory", "decompose_recompose",
+    "few_shot", "crossover", "trajectory", "trajectory_momentum",
+    "decompose_recompose",
 ]
 _FREE = ["grips_delete", "grips_swap", "midpoint_crossover", "format_constraint"]
 
@@ -96,9 +97,9 @@ BANDIT_POOL: List[str] = [t for t in FUNNEL_V2_POOL if t not in STATIC_CORE]
 
 _ALL_TECHNIQUE_FNS: Dict[str, object] = {**V1_TECHNIQUES, **V2_TECHNIQUES}
 
-assert len(FUNNEL_V2_POOL) == 21, f"expected 21 operators, got {len(FUNNEL_V2_POOL)}"
+assert len(FUNNEL_V2_POOL) == 22, f"expected 22 operators, got {len(FUNNEL_V2_POOL)}"
 assert all(t in FUNNEL_V2_POOL for t in STATIC_CORE), "static core must be in the pool"
-assert len(BANDIT_POOL) == 18, f"expected 18 bandit arms, got {len(BANDIT_POOL)}"
+assert len(BANDIT_POOL) == 19, f"expected 19 bandit arms, got {len(BANDIT_POOL)}"
 assert all(t in _ALL_TECHNIQUE_FNS for t in FUNNEL_V2_POOL), (
     "pool references an unknown technique: "
     f"{[t for t in FUNNEL_V2_POOL if t not in _ALL_TECHNIQUE_FNS]}"
@@ -309,6 +310,7 @@ class FUNNELv2Optimizer(BaseOptimizer):
         full_dev = dataset.get_eval_samples("dev", n=None)
         pool = list(full_dev)
         random.Random(42).shuffle(pool)
+        pool = self._order_dev_pool(pool)
 
         # Split dev into an OPTIMIZATION pool and a HELD-OUT selection slice.
         #
@@ -381,6 +383,17 @@ class FUNNELv2Optimizer(BaseOptimizer):
         self._forced_elite: Optional[PromptRecord] = None
 
     # --- setup helpers ---
+
+    def _order_dev_pool(self, pool: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Hook applied to the shuffled dev pool before it's split into the
+        optimization pool and held-out slice. Identity here -- current
+        behavior for every existing variant is unchanged. Overridden by
+        FUNNELv4dOptimizer to front-load instances that look more complex
+        into the early, accumulating-fresh phases (see its docstring for why
+        a true historical-variance ordering isn't buildable from data this
+        project actually persists).
+        """
+        return pool
 
     def _task_key(self) -> str:
         return getattr(self.dataset, "name", "") or ""

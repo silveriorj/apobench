@@ -35,7 +35,7 @@ against.
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import Dict, List
 
 from pof.core.types import PromptRecord
 from pof.optimizers import register_optimizer
@@ -64,6 +64,30 @@ class FUNNELv4dOptimizer(FUNNELv4cOptimizer):
     """FUNNELv4c with batch-level racing for brand-new candidates."""
 
     name = "funnel_v4d"
+
+    def _order_dev_pool(self, pool: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """Front-load instances that look more complex into early phases.
+
+        A true discriminative-instance ordering (prioritize instances where
+        past candidates' scores disagreed most, per the "reward variance"
+        literature on prompt-overfitting) needs historical per-DEV-instance
+        correctness data. This project only persists TEST-split per-sample
+        details in result files, and dev/test are disjoint splits by
+        construction -- test-instance difficulty tells you nothing about a
+        dev instance's difficulty, so that data doesn't actually support the
+        real thing. This is a substitute that IS supportable from data
+        available up front, with no circularity: input length as a cheap
+        complexity proxy. Longer/more complex-looking inputs tend to be more
+        discriminative (more ways to get partially or fully wrong), so
+        putting them early means the accumulating-fresh schedule's early,
+        cheap phases see more of the signal that actually separates
+        candidates, rather than however a random shuffle happened to land.
+
+        Stable sort: within a length, the seeded random order set before
+        this hook runs is preserved, so this doesn't reduce the value of the
+        RNG shuffle for tasks/inputs where length carries little signal.
+        """
+        return sorted(pool, key=lambda s: len(str(s.get("input", ""))), reverse=True)
 
     def _eval_overrides(self, record: PromptRecord):
         """(system_prompt_override, max_new_tokens_override) for one record.
