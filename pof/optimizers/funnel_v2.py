@@ -652,7 +652,15 @@ class FUNNELv2Optimizer(BaseOptimizer):
         it actually matters. Nested prefixes mean each one pays only its
         increment. Iterated, because correcting the leaders can promote a
         previously-lower record into contention.
+
+        Called from two places: naturally, inside `_step()` when phases are
+        exhausted (before raising StopIteration), and unconditionally by
+        `BaseOptimizer.optimize()`'s `finally` block as a backstop for exit
+        paths (patience, budget exhaustion) that don't go through `_step()`'s
+        own StopIteration at all -- guarded so the second call is a no-op.
         """
+        if self._finalized:
+            return
         n_final = self._phase_sizes[-1]
         for _ in range(3):
             contenders = sorted(
@@ -672,6 +680,7 @@ class FUNNELv2Optimizer(BaseOptimizer):
             self._evaluate_phase(under, phase=len(self._phase_sizes) - 1)
 
         self._select_on_holdout()
+        self._finalized = True
 
     def _select_on_holdout(self) -> None:
         """Pick the reported winner on data the search never saw.

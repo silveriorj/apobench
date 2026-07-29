@@ -107,6 +107,11 @@ class BaseOptimizer(ABC):
         self.seed_prompt = seed_prompt
         self.eval_sample_size = eval_sample_size
         self.kwargs = kwargs
+        # Guards _finalize() against a double call: FUNNELv2's own _step()
+        # calls it before raising StopIteration on natural phase exhaustion,
+        # but optimize()'s other exit paths (patience, budget) previously
+        # skipped it entirely -- see _finalize()'s docstring.
+        self._finalized: bool = False
 
         # Audit tracker
         self.tracker = AuditTracker(
@@ -200,6 +205,21 @@ class BaseOptimizer(ABC):
             logger.error(f"Optimization failed: {e}", exc_info=True)
             raise
         finally:
+            # Bug fix (2026-07-29): every exit path used to reach this point
+            # EXCEPT the StopIteration one (natural phase exhaustion), which
+            # is the only one that previously ran a subclass's _finalize().
+            # Patience-based and budget-exhaustion stops skipped it entirely,
+            # meaning FUNNELv2+'s held-out selection correction -- built
+            # specifically to counter a measured winner's-curse bias between
+            # dev and test scores -- silently never ran for any run that
+            # stopped that way. _finalize() is a no-op by default and guarded
+            # by self._finalized, so calling it here is always safe whether
+            # or not a subclass's _step() already called it.
+            if not self._finalized:
+                try:
+                    self._finalize()
+                except Exception as e:
+                    logger.error(f"_finalize() failed: {e}", exc_info=True)
             self.tracker.end()
             self.tracker.usage = self.llm.get_usage()
 
@@ -228,6 +248,17 @@ class BaseOptimizer(ABC):
             Updated population. Raise StopIteration to end early.
         """
         ...
+
+    def _finalize(self) -> None:
+        """Called exactly once, right before the result is built, regardless
+        of why the optimization loop stopped (phase exhaustion, patience,
+        budget exhaustion). No-op here; FUNNELv2+ overrides it to run held-out
+        selection. Guard with `if self._finalized: return` / set
+        `self._finalized = True` if overriding and calling this from more
+        than one place (see FUNNELv2Optimizer._finalize for the pattern) --
+        `optimize()`'s own call already checks the flag before calling.
+        """
+        pass
 
     # --- Shared helpers ---
 
