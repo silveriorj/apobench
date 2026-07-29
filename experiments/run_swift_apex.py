@@ -398,8 +398,19 @@ def run_experiment(
                             _run_dir = Path(output_root) / _model_slug(model) / method / _task_fs / f"seed_{seed}"
                         else:
                             _run_dir = Path(output_root) / method / _task_fs / f"seed_{seed}"
-                        _result_file = _run_dir / f"result_{method}_{_task_fs}.json"
-                        if _result_file.exists():
+                        # Glob rather than a fixed filename: the result file
+                        # is named after the OPTIMIZER CLASS's hardcoded
+                        # .name (e.g. "funnel_v4d"), not necessarily the
+                        # method string used to launch it -- an alias like
+                        # "funnel_lean"/"funnel_wide"/"funnel_indexed"
+                        # resolves to a class whose .name differs from the
+                        # alias, so a fixed f"result_{method}_..." filename
+                        # never matched and skip-existing silently never
+                        # skipped anything for alias-launched runs. The
+                        # directory itself is already correctly scoped by
+                        # the alias string, so any result file in it is the
+                        # right one regardless of what name is embedded.
+                        if _run_dir.exists() and list(_run_dir.glob("result_*.json")):
                             logger.info(f"  ↩ SKIP {method}/{_task_fs}/seed_{seed} (result exists)")
                             completed_runs += 1
                             continue
