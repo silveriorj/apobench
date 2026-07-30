@@ -54,6 +54,7 @@ SEEDS = [42, 123, 7]
 # project's short answer-only eval budgets (32-64 tokens) a reasoning model
 # left thinking burns the whole budget and returns an empty answer.
 OLLAMA_MODELS: Dict[str, Dict[str, Any]] = {
+    "qwen3.5:4b": {"base_url": "http://127.0.0.1:11435", "thinking_mode": False},
     "qwen3.5:9b": {"base_url": "http://127.0.0.1:11435", "thinking_mode": False},
     "qwen3.5:27b": {"base_url": "http://127.0.0.1:11435", "thinking_mode": False},
 }
