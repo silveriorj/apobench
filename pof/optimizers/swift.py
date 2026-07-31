@@ -117,6 +117,7 @@ class SWIFTOptimizer(BaseOptimizer):
 
     def _step(self) -> List[PromptRecord]:
         """Execute SWIFT phases 1-3."""
+        self._maybe_stop_if_perfect()
         self._phase_idx += 1
         if self._phase_idx == 1:
             return self._phase_failure_guided()

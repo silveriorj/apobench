@@ -260,6 +260,31 @@ class BaseOptimizer(ABC):
         """
         pass
 
+    def _maybe_stop_if_perfect(self, threshold: float = 1.0) -> None:
+        """Raise StopIteration if `best_record.score` already reached
+        `threshold`. Not called automatically -- a subclass opts in by
+        calling this at the top of its own `_step()`.
+
+        Motivated by SWIFT reaching a perfect dev score in `_init_population`
+        (Gen 0, before any optimization operator even ran) and then still
+        grinding through its full fixed Phase 1/2/3 schedule for 2 more hours
+        with zero possible improvement, until the external time budget cut it
+        off mid-Phase-3 -- the same waste FUNNELv2+'s `_maybe_stop_if_perfect`
+        (funnel_v4d.py) was built to avoid, generalized here for any
+        optimizer whose `.score` is a plain accuracy fraction with no
+        barrier-penalty or other non-monotonic scoring quirk (FUNNEL
+        subclasses check their own `scores["dev"]` instead, since `.score`
+        there can be barrier-penalized below the true EM).
+        """
+        if self.best_record and self.best_record.score >= threshold:
+            note = (
+                f"perfect dev score ({threshold:.3f}) already reached -- "
+                f"stopping early rather than spending more budget confirming it"
+            )
+            logger.info(f"[{self.name}] {note}")
+            self.tracker.add_note(note)
+            raise StopIteration
+
     # --- Shared helpers ---
 
     def _evaluate_population(self, population: List[PromptRecord]) -> None:

@@ -102,6 +102,7 @@ class APEXOptimizer(BaseOptimizer):
 
     def _step(self) -> List[PromptRecord]:
         """Adaptive step: UCB1-select operators and apply them."""
+        self._maybe_stop_if_perfect()
         logger.info(f"[APEX Gen {self.generation}] Adaptive evolution step")
         candidates = list(self.population)
 
