@@ -115,29 +115,32 @@ COT_MAX_NEW_TOKENS = 1536
 COT_BRIEF_MAX_NEW_TOKENS = 256
 
 # Per-task eval batch size.
-# Calibrated for DeepSeek-Coder-7B on 20 GB: MHA with 32 KV heads → ~512 KB/tok (32 layers).
-# Model weights ~14 GB, leaving ~5 GB. BBH tasks fit at batch=8; gsm8k at 4; humaneval at 2.
+# Originally calibrated for DeepSeek-Coder-7B/8B-class models on 20 GB (~14-16 GB
+# weights, ~4-5 GB headroom). Qwen3-4B-Instruct-2507 weighs ~8 GB in bf16 --
+# a single CoT run (batch=2) measured at ~9.5 GB used of 20 GB total, so ~10 GB
+# of headroom was going unused. Bumped 3-4x for this model; still leaves a
+# buffer for KV growth on the longer-context tasks (svamp/humaneval).
 EVAL_BATCH_SIZE: Dict[str, int] = {
-    # BBH — batch=4: calibrated for 8B models (~16 GB weights, ~4 GB headroom on 20 GB).
-    "dyck_languages": 2,
-    "boolean_expressions": 2,
-    "causal_judgement": 2,
-    "disambiguation_qa": 2,
-    "formal_fallacies": 2,
-    "hyperbaton": 2,
-    "logical_deduction_five_objects": 2,
-    "penguins_in_a_table": 2,  # kept for reference; not in the default matrix
-    "reasoning_about_colored_objects": 2,
-    "web_of_lies": 2,
-    # SVAMP — short 1-2 step CoT, seq well under GSM8K's ~900 tok → batch=2 is safe
-    "svamp": 2,
-    # GSM8K — seq ~900 tok → batch=4 costs ~1.8 GB KV (kept for reference; not in default matrix)
-    "gsm8k": 1,
-    # HumanEval — seq ~1500 tok → batch=2 costs ~1.5 GB KV
-    "humaneval": 1,
+    # BBH — batch=8 for Qwen3-4B (was 2, calibrated for 8B-class models).
+    "dyck_languages": 8,
+    "boolean_expressions": 8,
+    "causal_judgement": 8,
+    "disambiguation_qa": 8,
+    "formal_fallacies": 8,
+    "hyperbaton": 8,
+    "logical_deduction_five_objects": 8,
+    "penguins_in_a_table": 8,  # kept for reference; not in the default matrix
+    "reasoning_about_colored_objects": 8,
+    "web_of_lies": 8,
+    # SVAMP — short 1-2 step CoT, seq well under GSM8K's ~900 tok
+    "svamp": 6,
+    # GSM8K — seq ~900 tok, kept for reference; not in default matrix
+    "gsm8k": 4,
+    # HumanEval — seq ~1500 tok, longest generations of the set
+    "humaneval": 3,
 }
 
-_DEFAULT_EVAL_BATCH_SIZE = 4
+_DEFAULT_EVAL_BATCH_SIZE = 8
 
 # Per-task wall-clock budget (seconds).
 # SVAMP and HumanEval get 7200s so that slower methods (GAAPO, SEE) hit the cap
