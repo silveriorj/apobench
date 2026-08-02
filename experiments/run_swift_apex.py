@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -58,6 +59,31 @@ OLLAMA_MODELS: Dict[str, Dict[str, Any]] = {
     "qwen3.5:4b": {"base_url": "http://127.0.0.1:11435", "thinking_mode": False},
     "qwen3.5:9b": {"base_url": "http://127.0.0.1:11435", "thinking_mode": False},
     "qwen3.5:27b": {"base_url": "http://127.0.0.1:11435", "thinking_mode": False},
+}
+
+# Gemini models routed through the existing OpenAILLM backend via Google's
+# OpenAI-compatible endpoint -- no new backend needed, just base_url + key.
+# API key is read from GEMINI_API_KEY at run time, never hardcoded or logged.
+# No local GPU/eval-batch-size tuning applies here (OpenAILLM.generate_batch
+# threads its own concurrency, capped by max_workers below); the per-request
+# rate limit governs throughput, not GPU memory.
+_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
+    "gemini-2.0-flash": {
+        "backend": "openai",
+        "base_url": _GEMINI_BASE_URL,
+        "api_key": os.environ.get("GEMINI_API_KEY"),
+    },
+    "gemini-1.5-flash": {
+        "backend": "openai",
+        "base_url": _GEMINI_BASE_URL,
+        "api_key": os.environ.get("GEMINI_API_KEY"),
+    },
+    "gemini-1.5-pro": {
+        "backend": "openai",
+        "base_url": _GEMINI_BASE_URL,
+        "api_key": os.environ.get("GEMINI_API_KEY"),
+    },
 }
 
 # Per-task eval max_new_tokens (eval output only; operator/LLM generation uses
@@ -258,6 +284,14 @@ def build_run_config(
                 "backend": "ollama",
                 **OLLAMA_MODELS[model_name],
             }
+        elif model_name in GEMINI_MODELS:
+            gemini_cfg = GEMINI_MODELS[model_name]
+            if not gemini_cfg.get("api_key"):
+                raise RuntimeError(
+                    f"GEMINI_API_KEY not set in the environment -- required to run "
+                    f"model '{model_name}'. Export it before launching."
+                )
+            overrides["llm"] = {"model_name": model_name, **gemini_cfg}
         else:
             overrides["llm"] = {"model_name": model_name}
     return load_config(base_config_path, overrides=overrides)
