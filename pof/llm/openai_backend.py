@@ -54,7 +54,14 @@ class OpenAILLM(BaseLLM):
         try:
             import openai
 
-            client_kwargs: Dict[str, Any] = {}
+            client_kwargs: Dict[str, Any] = {
+                # The SDK's own built-in retry (default 2) fires INSIDE our
+                # retry loop's sleep window on 429/5xx, adding extra
+                # immediate requests that compound the burst instead of
+                # respecting our backoff. generate()'s loop is the only
+                # retry policy that should apply.
+                "max_retries": 0,
+            }
             if self._api_key:
                 client_kwargs["api_key"] = self._api_key
             if self._base_url:

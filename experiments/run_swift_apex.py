@@ -68,31 +68,30 @@ OLLAMA_MODELS: Dict[str, Dict[str, Any]] = {
 # threads its own concurrency, capped by max_workers below); the per-request
 # rate limit governs throughput, not GPU memory.
 _GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-# max_workers=2: free-tier RPM limits are single digits to low teens. The
-# OpenAILLM default (16) fires every eval batch as 16 simultaneous requests,
-# which on a free-tier key means all 16 hit 429 together and then retry in
-# a near-synchronized "thundering herd" -- measured 2026-08-03, a single
-# 1-seed/1-task test never completed a single successful call at max_workers
-# default. Capping concurrency to 2 lets requests actually clear the
-# per-minute window instead of all queuing behind the same retry backoff.
+# max_workers=1 (fully serial): free-tier RPM is apparently very low on this
+# project (single digits). The OpenAILLM default (16) and even max_workers=2
+# both produced a 429 storm with zero successful calls -- measured
+# 2026-08-03, a single 1-seed/1-task test never completed a single request
+# at either setting. Serializing requests is the only way observed to let
+# the per-minute window actually clear between calls.
 GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
     "gemini-2.0-flash": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 2,
+        "max_workers": 1,
     },
     "gemini-1.5-flash": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 2,
+        "max_workers": 1,
     },
     "gemini-1.5-pro": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 2,
+        "max_workers": 1,
     },
     # A "thinking" model like the Ollama qwen3.5 entries above -- burns part
     # of max_tokens on hidden reasoning before any visible answer. Verified
@@ -106,7 +105,7 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 2,
+        "max_workers": 1,
     },
 }
 
