@@ -143,6 +143,30 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "api_key": os.environ.get("GEMINI_API_KEY"),
         "max_workers": 1,
     },
+    # "gemini-2.5-flash-lite" is listed by models.list() but 404s on every
+    # actual call: "no longer available to new users" -- Google keeps the
+    # ID around for existing callers but blocks it for new API keys.
+    # gemini-flash-lite-latest is the closest live equivalent (Google's
+    # rolling "latest lite" alias). Verified working 2026-08-03, each with
+    # its own separate free-tier daily quota bucket.
+    "gemini-flash-lite-latest": {
+        "backend": "openai",
+        "base_url": _GEMINI_BASE_URL,
+        "api_key": os.environ.get("GEMINI_API_KEY"),
+        "max_workers": 1,
+    },
+    "gemini-3.1-flash-lite": {
+        "backend": "openai",
+        "base_url": _GEMINI_BASE_URL,
+        "api_key": os.environ.get("GEMINI_API_KEY"),
+        "max_workers": 1,
+    },
+    "gemini-3.5-flash-lite": {
+        "backend": "openai",
+        "base_url": _GEMINI_BASE_URL,
+        "api_key": os.environ.get("GEMINI_API_KEY"),
+        "max_workers": 1,
+    },
 }
 
 # Per-task eval max_new_tokens (eval output only; operator/LLM generation uses
