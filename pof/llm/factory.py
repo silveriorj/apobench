@@ -38,11 +38,14 @@ def create_llm(config: Optional[LLMConfig] = None, **kwargs: Any) -> BaseLLM:
     elif backend == "openai":
         from pof.llm.openai_backend import OpenAILLM
 
-        return OpenAILLM(
+        kwargs_out: dict = dict(
             model_name=config.model_name,
             api_key=config.api_key,
             base_url=config.base_url,
         )
+        if config.max_workers is not None:
+            kwargs_out["max_workers"] = config.max_workers
+        return OpenAILLM(**kwargs_out)
     elif backend == "ollama":
         from pof.llm.ollama_backend import OllamaLLM
 

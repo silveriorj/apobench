@@ -21,6 +21,13 @@ class LLMConfig(BaseModel):
     # OpenAI-specific
     api_key: Optional[str] = Field(default=None, description="OpenAI API key (or env var)")
     base_url: Optional[str] = Field(default=None, description="Custom API base URL")
+    max_workers: Optional[int] = Field(
+        default=None,
+        description="Concurrent request cap for OpenAILLM.generate_batch. "
+        "None keeps OpenAILLM's own default (16) -- override low (2-4) for "
+        "rate-limited free-tier API keys, where firing many requests at "
+        "once triggers a synchronized 429 storm instead of smooth retries.",
+    )
 
 
 class EvalConfig(BaseModel):
