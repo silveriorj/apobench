@@ -22,6 +22,16 @@ from typing import Any, Dict, List, Optional
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Windows' console defaults to a legacy codepage (cp1252/cp437), not UTF-8 --
+# the checkmark/cross markers below (U+2713/U+2717) then either crash the
+# StreamHandler or get silently mangled into literal "✓" escape text in
+# logs (observed running this script under PowerShell). Reconfiguring stdout/
+# stderr to UTF-8 before logging is configured fixes both write paths at the
+# source; unaffected on Linux/macOS, where the default is already UTF-8.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from pof.config.loader import load_config
 from pof.config.schemas import RunConfig
 from pof.prompts.loader import get_seed_prompt
@@ -68,30 +78,31 @@ OLLAMA_MODELS: Dict[str, Dict[str, Any]] = {
 # threads its own concurrency, capped by max_workers below); the per-request
 # rate limit governs throughput, not GPU memory.
 _GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-# max_workers=1 (fully serial): free-tier RPM is apparently very low on this
-# project (single digits). The OpenAILLM default (16) and even max_workers=2
-# both produced a 429 storm with zero successful calls -- measured
-# 2026-08-03, a single 1-seed/1-task test never completed a single request
-# at either setting. Serializing requests is the only way observed to let
-# the per-minute window actually clear between calls.
+# max_workers=8: gemini-flash-lite-latest's dashboard-reported quota is
+# 4K RPM / 150K RPD, nowhere near a bottleneck at the fully-serial pace this
+# was launched at (~70/4K RPM observed). The max_workers=1/2 caution below
+# was measured against gemini-2.5-flash's exhausted 20-request/DAY quota
+# (a RESOURCE_EXHAUSTED wall, not a concurrency problem) -- conflating the
+# two led to over-throttling a model that had real headroom. Bump back down
+# per-model if a specific model's dashboard numbers turn out much lower.
 GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
     "gemini-2.0-flash": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 1,
+        "max_workers": 8,
     },
     "gemini-1.5-flash": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 1,
+        "max_workers": 8,
     },
     "gemini-1.5-pro": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 1,
+        "max_workers": 8,
     },
     # A "thinking" model like the Ollama qwen3.5 entries above -- burns part
     # of max_tokens on hidden reasoning before any visible answer. Verified
@@ -105,7 +116,7 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 1,
+        "max_workers": 8,
     },
     # Separate free-tier daily quota bucket from "gemini-2.5-flash" (tracked
     # by literal model-name string on Google's side, not by underlying
@@ -116,7 +127,7 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 1,
+        "max_workers": 8,
     },
     # "gemini-3.1-flash-live-preview" (a real model on this key, confirmed via
     # models.list()) is NOT usable here -- Live models only support Google's
@@ -129,19 +140,19 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 1,
+        "max_workers": 8,
     },
     "gemini-3.5-flash": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 1,
+        "max_workers": 8,
     },
     "gemini-3.6-flash": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 1,
+        "max_workers": 8,
     },
     # "gemini-2.5-flash-lite" is listed by models.list() but 404s on every
     # actual call: "no longer available to new users" -- Google keeps the
@@ -153,19 +164,19 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 1,
+        "max_workers": 8,
     },
     "gemini-3.1-flash-lite": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 1,
+        "max_workers": 8,
     },
     "gemini-3.5-flash-lite": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 1,
+        "max_workers": 8,
     },
 }
 
