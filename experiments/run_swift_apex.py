@@ -118,6 +118,31 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "api_key": os.environ.get("GEMINI_API_KEY"),
         "max_workers": 1,
     },
+    # "gemini-3.1-flash-live-preview" (a real model on this key, confirmed via
+    # models.list()) is NOT usable here -- Live models only support Google's
+    # separate bidiGenerateContent WebSocket protocol for realtime audio/
+    # video, not the generateContent/chat-completions path OpenAILLM uses.
+    # These non-Live gemini-3.x models work fine and each has its own
+    # separate free-tier daily quota bucket, same as the 2.5/flash-latest
+    # models above -- verified 2026-08-03.
+    "gemini-3-flash-preview": {
+        "backend": "openai",
+        "base_url": _GEMINI_BASE_URL,
+        "api_key": os.environ.get("GEMINI_API_KEY"),
+        "max_workers": 1,
+    },
+    "gemini-3.5-flash": {
+        "backend": "openai",
+        "base_url": _GEMINI_BASE_URL,
+        "api_key": os.environ.get("GEMINI_API_KEY"),
+        "max_workers": 1,
+    },
+    "gemini-3.6-flash": {
+        "backend": "openai",
+        "base_url": _GEMINI_BASE_URL,
+        "api_key": os.environ.get("GEMINI_API_KEY"),
+        "max_workers": 1,
+    },
 }
 
 # Per-task eval max_new_tokens (eval output only; operator/LLM generation uses
