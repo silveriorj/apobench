@@ -78,30 +78,34 @@ OLLAMA_MODELS: Dict[str, Dict[str, Any]] = {
 # threads its own concurrency, capped by max_workers below); the per-request
 # rate limit governs throughput, not GPU memory.
 _GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-# max_workers=64: bumped again after dashboard showed ~260/4K RPM and
-# ~3.3K/150K RPD at max_workers=20 (2026-08-03) -- still far under ceiling.
-# The earlier max_workers=1/2 caution was measured against a DIFFERENT
-# model's exhausted 20-request/DAY quota (RESOURCE_EXHAUSTED, not a
-# concurrency problem) -- bump back down per-model if a specific model's
-# actual dashboard numbers turn out much lower than flash-lite-latest's.
+# max_workers=16: throughput scales with NUMBER OF PARALLEL PROCESSES, not
+# per-process thread count -- each single APEX run is bottlenecked by its own
+# optimizer population size (~8-20 in-flight candidates), so raising
+# max_workers past that does nothing for a lone process. Real fix for higher
+# aggregate RPM is running more task-partitioned processes at once (see
+# run_swift_apex parallel launches, 2026-08-03). But aggregate concurrency
+# is num_processes x max_workers -- 12 processes x max_workers=64 produced
+# a 429 burst even though the smoothed average was still under the 4K RPM
+# ceiling. Dropped to 16/process so 12+ concurrent processes stay under the
+# instantaneous burst limit while still saturating quota in aggregate.
 GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
     "gemini-2.0-flash": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 64,
+        "max_workers": 16,
     },
     "gemini-1.5-flash": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 64,
+        "max_workers": 16,
     },
     "gemini-1.5-pro": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 64,
+        "max_workers": 16,
     },
     # A "thinking" model like the Ollama qwen3.5 entries above -- burns part
     # of max_tokens on hidden reasoning before any visible answer. Verified
@@ -115,7 +119,7 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 64,
+        "max_workers": 16,
     },
     # Separate free-tier daily quota bucket from "gemini-2.5-flash" (tracked
     # by literal model-name string on Google's side, not by underlying
@@ -126,7 +130,7 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 64,
+        "max_workers": 16,
     },
     # "gemini-3.1-flash-live-preview" (a real model on this key, confirmed via
     # models.list()) is NOT usable here -- Live models only support Google's
@@ -139,19 +143,19 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 64,
+        "max_workers": 16,
     },
     "gemini-3.5-flash": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 64,
+        "max_workers": 16,
     },
     "gemini-3.6-flash": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 64,
+        "max_workers": 16,
     },
     # "gemini-2.5-flash-lite" is listed by models.list() but 404s on every
     # actual call: "no longer available to new users" -- Google keeps the
@@ -163,19 +167,19 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 64,
+        "max_workers": 16,
     },
     "gemini-3.1-flash-lite": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 64,
+        "max_workers": 16,
     },
     "gemini-3.5-flash-lite": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 64,
+        "max_workers": 16,
     },
 }
 
