@@ -84,6 +84,19 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
     },
+    # A "thinking" model like the Ollama qwen3.5 entries above -- burns part
+    # of max_tokens on hidden reasoning before any visible answer. Verified
+    # working on a fresh no-billing project (2026-08-03): gemini-2.0-flash's
+    # free tier is 0 on that project, but 2.5-flash has real free quota.
+    # Only run this with --cot (1536-token budget) -- the 32-64 token
+    # answer-only budgets get consumed entirely by thinking tokens, same
+    # empty-answer failure mode a non-thinking-disabled reasoning model
+    # hits elsewhere in this harness.
+    "gemini-2.5-flash": {
+        "backend": "openai",
+        "base_url": _GEMINI_BASE_URL,
+        "api_key": os.environ.get("GEMINI_API_KEY"),
+    },
 }
 
 # Per-task eval max_new_tokens (eval output only; operator/LLM generation uses
