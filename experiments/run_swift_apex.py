@@ -107,6 +107,17 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "api_key": os.environ.get("GEMINI_API_KEY"),
         "max_workers": 1,
     },
+    # Separate free-tier daily quota bucket from "gemini-2.5-flash" (tracked
+    # by literal model-name string on Google's side, not by underlying
+    # model) -- verified 2026-08-03 after 2.5-flash's 20-request/day quota
+    # was exhausted, this alias still succeeded. Same thinking-model
+    # constraint: --cot only.
+    "gemini-flash-latest": {
+        "backend": "openai",
+        "base_url": _GEMINI_BASE_URL,
+        "api_key": os.environ.get("GEMINI_API_KEY"),
+        "max_workers": 1,
+    },
 }
 
 # Per-task eval max_new_tokens (eval output only; operator/LLM generation uses
