@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,6 +13,17 @@ from pof.core.types import GenerationConfig
 from pof.llm.base import BaseLLM
 
 logger = logging.getLogger(__name__)
+
+# Retry policy for rate-limit (429) and transient server errors (5xx).
+# Gemini's OpenAI-compat endpoint returns 429 both for genuine per-minute
+# rate limits (recoverable in seconds) and for exhausted prepay credits
+# (never recoverable by waiting) -- the retry loop can't tell those apart
+# from the exception alone, so it always backs off and retries; a
+# credits-exhausted account will just exhaust MAX_RETRIES and surface the
+# real error instead of retrying forever.
+_MAX_RETRIES = 6
+_BASE_DELAY = 2.0  # seconds, doubles each retry
+_MAX_DELAY = 60.0
 
 
 class OpenAILLM(BaseLLM):
@@ -60,35 +72,73 @@ class OpenAILLM(BaseLLM):
         config: Optional[GenerationConfig] = None,
         system_prompt: Optional[str] = None,
     ) -> str:
-        """Generate a single response via OpenAI API."""
+        """Generate a single response via OpenAI API.
+
+        Retries on 429 (rate limit) and 5xx (transient server error) with
+        exponential backoff + jitter, honoring the server's `Retry-After`
+        header when present. Every other exception (auth, bad request,
+        model-not-found) fails immediately -- those never resolve by
+        waiting.
+        """
+        import openai
+
         config = config or GenerationConfig()
         messages = self._build_messages(prompt, system_prompt)
 
         start = time.time()
-        try:
-            response = self._client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                max_tokens=config.max_new_tokens,
-                temperature=config.temperature,
-                top_p=config.top_p,
-            )
-            elapsed = time.time() - start
-
-            usage = response.usage
-            if usage:
-                self._track_call(
-                    input_tokens=usage.prompt_tokens,
-                    output_tokens=usage.completion_tokens,
-                    elapsed=elapsed,
+        last_err: Optional[Exception] = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                response = self._client.chat.completions.create(
+                    model=self.model_name,
+                    messages=messages,
+                    max_tokens=config.max_new_tokens,
+                    temperature=config.temperature,
+                    top_p=config.top_p,
                 )
-            else:
-                self._track_call(0, 0, elapsed)
+                elapsed = time.time() - start
 
-            return response.choices[0].message.content or ""
+                usage = response.usage
+                if usage:
+                    self._track_call(
+                        input_tokens=usage.prompt_tokens,
+                        output_tokens=usage.completion_tokens,
+                        elapsed=elapsed,
+                    )
+                else:
+                    self._track_call(0, 0, elapsed)
 
-        except Exception as e:
-            raise LLMError(f"OpenAI API call failed: {e}") from e
+                return response.choices[0].message.content or ""
+
+            except (openai.RateLimitError, openai.InternalServerError, openai.APIConnectionError) as e:
+                last_err = e
+                if attempt >= _MAX_RETRIES:
+                    break
+                delay = self._retry_delay(e, attempt)
+                logger.warning(
+                    f"[{self.model_name}] {type(e).__name__} (attempt {attempt + 1}/{_MAX_RETRIES}), "
+                    f"retrying in {delay:.1f}s"
+                )
+                time.sleep(delay)
+            except Exception as e:
+                raise LLMError(f"OpenAI API call failed: {e}") from e
+
+        raise LLMError(
+            f"OpenAI API call failed after {_MAX_RETRIES} retries: {last_err}"
+        ) from last_err
+
+    def _retry_delay(self, exc: Exception, attempt: int) -> float:
+        """Honor the server's Retry-After header if present, else exponential backoff + jitter."""
+        response = getattr(exc, "response", None)
+        if response is not None:
+            retry_after = response.headers.get("retry-after")
+            if retry_after:
+                try:
+                    return min(float(retry_after), _MAX_DELAY)
+                except ValueError:
+                    pass
+        base = min(_BASE_DELAY * (2 ** attempt), _MAX_DELAY)
+        return base + random.uniform(0, base * 0.25)
 
     def _track_call(self, input_tokens: int, output_tokens: int, elapsed: float, **kw) -> None:
         """Thread-safe usage tracking."""
