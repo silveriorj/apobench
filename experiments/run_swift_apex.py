@@ -78,34 +78,34 @@ OLLAMA_MODELS: Dict[str, Dict[str, Any]] = {
 # threads its own concurrency, capped by max_workers below); the per-request
 # rate limit governs throughput, not GPU memory.
 _GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-# max_workers=16: throughput scales with NUMBER OF PARALLEL PROCESSES, not
-# per-process thread count -- each single APEX run is bottlenecked by its own
-# optimizer population size (~8-20 in-flight candidates), so raising
-# max_workers past that does nothing for a lone process. Real fix for higher
-# aggregate RPM is running more task-partitioned processes at once (see
-# run_swift_apex parallel launches, 2026-08-03). But aggregate concurrency
-# is num_processes x max_workers -- 12 processes x max_workers=64 produced
-# a 429 burst even though the smoothed average was still under the 4K RPM
-# ceiling. Dropped to 16/process so 12+ concurrent processes stay under the
-# instantaneous burst limit while still saturating quota in aggregate.
+# max_workers=64, 5 PARALLEL PROCESSES: verified clean 2026-08-03 (~1.19K/4K
+# RPM, zero 429s over ~15min sustained). Attempts to scale further --
+# max_workers=64 x 12 processes, then max_workers=16 x 12 processes -- both
+# produced persistent 429 storms, not just a transient launch burst. 12
+# simultaneous processes appears to be past whatever the real effective
+# ceiling is regardless of per-process throttling; reverted to the last
+# configuration that ran cleanly. If revisiting, scale the PROCESS COUNT
+# cautiously (try 6-8) rather than assuming linear headroom from the 4K RPM
+# dashboard number, which does not seem to reflect the actually-enforced
+# limit for this project/key.
 GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
     "gemini-2.0-flash": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 16,
+        "max_workers": 64,
     },
     "gemini-1.5-flash": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 16,
+        "max_workers": 64,
     },
     "gemini-1.5-pro": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 16,
+        "max_workers": 64,
     },
     # A "thinking" model like the Ollama qwen3.5 entries above -- burns part
     # of max_tokens on hidden reasoning before any visible answer. Verified
@@ -119,7 +119,7 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 16,
+        "max_workers": 64,
     },
     # Separate free-tier daily quota bucket from "gemini-2.5-flash" (tracked
     # by literal model-name string on Google's side, not by underlying
@@ -130,7 +130,7 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 16,
+        "max_workers": 64,
     },
     # "gemini-3.1-flash-live-preview" (a real model on this key, confirmed via
     # models.list()) is NOT usable here -- Live models only support Google's
@@ -143,19 +143,19 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 16,
+        "max_workers": 64,
     },
     "gemini-3.5-flash": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 16,
+        "max_workers": 64,
     },
     "gemini-3.6-flash": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 16,
+        "max_workers": 64,
     },
     # "gemini-2.5-flash-lite" is listed by models.list() but 404s on every
     # actual call: "no longer available to new users" -- Google keeps the
@@ -167,19 +167,19 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 16,
+        "max_workers": 64,
     },
     "gemini-3.1-flash-lite": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 16,
+        "max_workers": 64,
     },
     "gemini-3.5-flash-lite": {
         "backend": "openai",
         "base_url": _GEMINI_BASE_URL,
         "api_key": os.environ.get("GEMINI_API_KEY"),
-        "max_workers": 16,
+        "max_workers": 64,
     },
 }
 
