@@ -73,13 +73,31 @@ logger = logging.getLogger(__name__)
 # bandit. format_constraint is excluded here -- it's no longer a competing
 # arm (see module docstring). Used only as a warm-start prior -- the bandit
 # still adapts to the live task/model from there.
+#
+# STALE AS OF the APEXOptimizer._step() credit-assignment fix: these means
+# were computed from v1's absolute candidate SCORE (v1 credited
+# record.score directly, no baseline subtraction), and every arm's mean
+# clustered near 0.53-0.60 because all v1 arms drew parents from the same
+# elite pool -- the exact flaw the fix addresses. The base class now
+# credits FITNESS IMPROVEMENT (candidate score minus its own parent's
+# score), a quantity centered near 0 with a different scale entirely.
+# Warm-starting v2's bandit with the old absolute-score means would make
+# the prior dominate and miscalibrate every live pull for `prior_pulls`
+# rounds, since a ~0.55 "improvement" is not a plausible value. Set to 0.0
+# (neutral) until this project re-derives real improvement-based priors
+# from a fresh v1-lineage audit trail collected under the fixed metric --
+# recomputing them from the OLD audit trail is not possible, since that
+# trail never recorded per-candidate parent scores. The std values are left
+# as a rough relative-noisiness ranking across arms (still directionally
+# informative for the UCB1-Tuned variance term) but should also be treated
+# as approximate until re-derived.
 HISTORICAL_ARM_STATS: Dict[str, Tuple[float, float]] = {
-    "few_shot":          (0.599, 0.121),
-    "crossover":         (0.588, 0.221),
-    "semantic_var":      (0.560, 0.236),
-    "failure_guided":    (0.550, 0.227),
-    "expert_refine":     (0.539, 0.239),
-    "trajectory":        (0.530, 0.270),
+    "few_shot":          (0.0, 0.121),
+    "crossover":         (0.0, 0.221),
+    "semantic_var":      (0.0, 0.236),
+    "failure_guided":    (0.0, 0.227),
+    "expert_refine":     (0.0, 0.239),
+    "trajectory":        (0.0, 0.270),
 }
 
 

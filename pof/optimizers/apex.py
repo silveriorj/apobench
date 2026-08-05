@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import math
 import random
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pof.core.types import PromptRecord
 from pof.optimizers import register_optimizer
@@ -101,24 +101,44 @@ class APEXOptimizer(BaseOptimizer):
         return self._select_top_k(candidates)
 
     def _step(self) -> List[PromptRecord]:
-        """Adaptive step: UCB1-select operators and apply them."""
+        """Adaptive step: UCB1-select operators and apply them.
+
+        Two mechanisms below were corrected after review found they made the
+        bandit unable to discriminate operators in practice: (1) each pull's
+        outcome is now tracked regardless of whether it produced a usable
+        candidate, so a duplicate-prone or deterministic operator's pull
+        count cannot freeze while `total_pulls` keeps growing (previously
+        this let such an operator's UCB index climb without bound); and (2)
+        the reward credited to an arm is the candidate's fitness IMPROVEMENT
+        over its own parent(s)' score, not its absolute score (previously,
+        since every operator draws parents from the same elite pool,
+        absolute scores clustered within a narrow band while the c=0.5
+        exploration bonus spanned several times that band -- so arm ranking
+        tracked pull count almost exclusively, regardless of reward).
+        """
         self._maybe_stop_if_perfect()
         logger.info(f"[APEX Gen {self.generation}] Adaptive evolution step")
         candidates = list(self.population)
 
         operators = self._select_operators()
 
+        # pulls[op_name] = one entry per call to op_fn() (i.e. per bandit
+        # pull), holding whatever records that pull produced (possibly
+        # none). This -- not a filtered count of surviving candidates -- is
+        # what the bandit's pull count and total_pulls must be based on.
+        pulls: Dict[str, List[List[PromptRecord]]] = {}
         for op_name, op_fn in operators:
             for _ in range(self.candidates_per_operator):
-                new_texts = op_fn()
-                for text in new_texts:
+                produced: List[PromptRecord] = []
+                for text, parent_ids in op_fn():
                     text = (text or "").strip()
                     if text and not self._is_duplicate(text):
                         record = self._create_record(
-                            text, operator=op_name,
-                            parent_ids=[r.id for r in self.population[:2]]
+                            text, operator=op_name, parent_ids=parent_ids
                         )
                         candidates.append(record)
+                        produced.append(record)
+                pulls.setdefault(op_name, []).append(produced)
 
         # Evaluate new candidates: GEPA-style minibatch gate — fresh random
         # minibatch filters, survivors get the full dev evaluation.
@@ -126,21 +146,48 @@ class APEXOptimizer(BaseOptimizer):
         baseline = self.best_record.score if self.best_record else 0.0
         self._evaluate_with_minibatch_gate(new_candidates, baseline)
 
-        # Track operator performance for the bandit (minibatch score for
-        # rejected candidates still informs credit assignment).
-        for record in new_candidates:
-            self._operator_scores.setdefault(record.operator, []).append(record.score)
+        # Credit assignment: reward = mean fitness improvement of a pull's
+        # produced candidate(s) over their own parent(s)' score at
+        # generation time; a pull producing nothing usable is credited 0.0
+        # (still counted as a pull, never silently dropped).
+        parent_score_by_id = {r.id: r.score for r in self.population}
+        for op_name, op_pulls in pulls.items():
+            for produced in op_pulls:
+                if produced:
+                    rewards = []
+                    for record in produced:
+                        parent_scores = [
+                            parent_score_by_id[pid]
+                            for pid in record.parent_ids
+                            if pid in parent_score_by_id
+                        ]
+                        parent_baseline = (
+                            sum(parent_scores) / len(parent_scores)
+                            if parent_scores else baseline
+                        )
+                        rewards.append(record.score - parent_baseline)
+                    reward = sum(rewards) / len(rewards)
+                else:
+                    reward = 0.0
+                self._operator_scores.setdefault(op_name, []).append(reward)
 
-        # Tournament selection with elitism
+        # Tournament selection with elitism, then re-sort by score: several
+        # operators index self.population[:k] as "the current elites", which
+        # only holds if the population is rank-ordered. Tournament selection
+        # previously returned the elite followed by winners in draw order,
+        # not score order, so that assumption broke from generation 2 on.
         selected = self._tournament_select(candidates)
+        selected.sort(key=lambda r: r.score, reverse=True)
         return selected
 
     def _select_operators(self) -> List[tuple]:
         """UCB1 bandit over operators (cf. ProTeGi's bandit selection).
 
-        value = mean(scores) + c * sqrt(ln(total_pulls) / pulls_i).
-        Unpulled operators have infinite value, so every operator is tried
-        before any is repeated — no premature greedy lock-in.
+        value = mean(rewards) + c * sqrt(ln(total_pulls) / pulls_i), where
+        `rewards` are fitness-improvement values (can be negative) rather
+        than absolute scores -- see _step's docstring for why. Unpulled
+        operators have infinite value, so every operator is tried before any
+        is repeated — no premature greedy lock-in.
         """
         all_operators = [
             ("expert_refine", self._op_expert_refine),
@@ -191,7 +238,7 @@ class APEXOptimizer(BaseOptimizer):
 
     # --- APEX operators ---
 
-    def _op_expert_refine(self) -> List[str]:
+    def _op_expert_refine(self) -> List[Tuple[str, List[str]]]:
         """Refine a random elite using a random expert persona."""
         persona = random.choice(self.expert_personas)
         record = random.choice(self.population[:3]) if self.population else None
@@ -205,9 +252,9 @@ class APEXOptimizer(BaseOptimizer):
             f"Improved instruction:"
         )
         result = self._generate_prompt(meta_prompt, temperature=0.7, system_prompt=_IMPROVE_SYSTEM_PROMPT)
-        return [result] if result.strip() else []
+        return [(result, [record.id])] if result.strip() else []
 
-    def _op_failure_guided(self) -> List[str]:
+    def _op_failure_guided(self) -> List[Tuple[str, List[str]]]:
         """Failure-guided improvement of a random elite."""
         record = random.choice(self.population[:3]) if self.population else None
         if not record:
@@ -227,21 +274,23 @@ class APEXOptimizer(BaseOptimizer):
             return []
 
         improved = self._feedback_improve(record.text, failures)
-        return [improved] if improved and improved.strip() else []
+        return [(improved, [record.id])] if improved and improved.strip() else []
 
-    def _op_crossover(self) -> List[str]:
+    def _op_crossover(self) -> List[Tuple[str, List[str]]]:
         """Crossover two random elites."""
         if len(self.population) < 2:
             return []
         a, b = random.sample(self.population[:4], 2)
         result = self._crossover(a.text, b.text)
-        return [result] if result.strip() else []
+        return [(result, [a.id, b.id])] if result.strip() else []
 
-    def _op_trajectory(self) -> List[str]:
+    def _op_trajectory(self) -> List[Tuple[str, List[str]]]:
         """OPRO-style trajectory generation.
 
         Full instructions (not truncated fragments) plus task exemplars in
-        the meta-prompt, per Yang et al. 2023's ablations.
+        the meta-prompt, per Yang et al. 2023's ablations. Conditioned on
+        the whole population rather than a single parent, so all current
+        population members are recorded as this candidate's parents.
         """
         context = "\n".join(
             f"Score: {r.score:.3f}\nInstruction: {r.text}\n"
@@ -260,16 +309,18 @@ class APEXOptimizer(BaseOptimizer):
             "New higher-scoring instruction:"
         )
         result = self._generate_prompt(meta_prompt, temperature=0.8, system_prompt=_GENERATE_SYSTEM_PROMPT)
-        return [result] if result.strip() else []
+        if not result.strip():
+            return []
+        return [(result, [r.id for r in self.population])]
 
-    def _op_semantic_variation(self) -> List[str]:
+    def _op_semantic_variation(self) -> List[Tuple[str, List[str]]]:
         """Semantic variation of the best prompt."""
         best = self.population[0] if self.population else None
         if not best:
             return []
-        return self._semantic_variation(best.text, n=1)
+        return [(t, [best.id]) for t in self._semantic_variation(best.text, n=1)]
 
-    def _op_few_shot(self) -> List[str]:
+    def _op_few_shot(self) -> List[Tuple[str, List[str]]]:
         """Append 1-3 labeled exemplars to an elite (joint instruction+ICL
         search, cf. CAPO/SEE)."""
         record = random.choice(self.population[:3]) if self.population else None
@@ -283,9 +334,16 @@ class APEXOptimizer(BaseOptimizer):
         examples = "\n\n".join(
             format_exemplar(self.evaluator, s) for s in shots
         )
-        return [f"{record.text}\n\nExamples:\n{examples}"]
+        # Idempotent: strip any demonstration block this operator already
+        # appended in an earlier generation before attaching new ones, so
+        # demonstrations replace rather than accumulate without bound on a
+        # record re-selected as an elite across generations. (Previously
+        # this did not strip, which is a plausible cause of APEX's
+        # anomalously high token cost relative to every compared method.)
+        base_text = record.text.split("\n\nExamples:\n", 1)[0]
+        return [(f"{base_text}\n\nExamples:\n{examples}", [record.id])]
 
-    def _op_format_constraint(self) -> List[str]:
+    def _op_format_constraint(self) -> List[Tuple[str, List[str]]]:
         """Append an explicit output-format rule derived from the targets.
 
         Strict extraction penalizes format drift more than reasoning errors
@@ -294,13 +352,24 @@ class APEXOptimizer(BaseOptimizer):
         record = random.choice(self.population[:3]) if self.population else None
         if not record:
             return []
-        targets = [s["target"] for s in self.dataset.get_few_shot_examples(n=4)]
+        # A fixed seed here made this operator's output deterministic across
+        # calls; once its output was generated once it would be rejected by
+        # hash-dedup on every subsequent pull, freezing its true pull count
+        # while `total_pulls` kept growing -- letting its UCB index climb
+        # without bound while it contributed no candidates. Randomizing the
+        # sample matches _op_few_shot's pattern and fixes this.
+        targets = [
+            s["target"] for s in
+            self.dataset.get_few_shot_examples(n=4, seed=random.randint(0, 10**6))
+        ]
         sample_answers = ", ".join(repr(t)[:30] for t in targets[:3])
         constraint = (
             f"\n\nAnswer with ONLY the final answer, exactly in the same format "
             f"as these examples: {sample_answers}. No explanation."
         )
-        return [record.text.rstrip() + constraint]
+        # Idempotent for the same reason as _op_few_shot above.
+        base_text = record.text.split("\n\nAnswer with ONLY the final answer", 1)[0]
+        return [(base_text.rstrip() + constraint, [record.id])]
 
     def _expert_generate(
         self, persona: str, samples: List[Dict[str, str]]
