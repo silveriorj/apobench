@@ -6,7 +6,7 @@ pull-counting, credit assignment, and tournament re-sort. They construct an
 APEXOptimizer instance via object.__new__ (bypassing __init__, which needs a
 real llm/dataset/evaluator) and set only the attributes each method touches.
 """
-from pof.core.types import PromptRecord
+from pof.core.types import EvalResult, PromptRecord
 from pof.optimizers.apex import APEXOptimizer
 
 
@@ -151,6 +151,201 @@ def test_op_format_constraint_is_idempotent():
     assert "'old'" not in text
 
 
+# ---------------------------------------------------------------------------
+# _step()-level tests. Unlike everything above, these exercise the actual
+# reward-computation code path inside _step() with a fully scripted, no-LLM
+# fake evaluator/dataset/tracker -- closing the gap a review round found:
+# every earlier test here covers a periphery function, none touches _step()
+# itself, where both rounds of the credit-assignment fix actually live.
+# ---------------------------------------------------------------------------
+
+class _FakeTracker:
+    """Minimal stand-in for AuditTracker: _create_record only needs add_record
+    to be a no-op, and _is_duplicate only needs history.get_by_hash."""
+
+    class _FakeHistory:
+        def get_by_hash(self, _text_hash):
+            return None  # nothing is ever a duplicate in these tests
+
+    def __init__(self):
+        self.history = self._FakeHistory()
+
+    def add_record(self, record):
+        pass
+
+
+class _ScriptedEvaluator:
+    """Returns pre-scripted scores keyed by exact prompt text, so a test can
+    control precisely which candidates the minibatch gate passes/rejects and
+    what their full-dev score is, without any real evaluation happening."""
+
+    def __init__(self, minibatch_scores, dev_scores):
+        self.minibatch_scores = minibatch_scores
+        self.dev_scores = dev_scores
+
+    def evaluate(self, text, samples):
+        # `samples` distinguishes minibatch (len==16 in these tests) from
+        # full-dev (len==50) calls, mirroring base.py's real call pattern.
+        table = self.minibatch_scores if len(samples) == 16 else self.dev_scores
+        score = table.get(text, 0.0)
+        return EvalResult(score=score, performance_vector=[], per_sample_details=[])
+
+
+class _FakeDataset:
+    def get_eval_samples(self, split, n=50, seed=None):
+        return list(range(n))  # length is all evaluate() inspects
+
+    def get_few_shot_examples(self, n=8, seed=None):
+        return [{"input": "x", "target": "y"}] * n
+
+
+def _stepping_apex(operator_outputs, minibatch_scores, dev_scores, population):
+    """An APEXOptimizer wired for a real _step() call: fake tracker/dataset/
+    evaluator, real _create_record/_is_duplicate/_evaluate_with_minibatch_gate/
+    _tournament_select, and _select_operators/_maybe_stop_if_perfect stubbed
+    out so the test controls exactly which operators fire and what they
+    return, rather than depending on UCB1 arm selection (tested separately
+    above)."""
+    opt = object.__new__(APEXOptimizer)
+    opt.ucb_c = 0.5
+    opt.population_size = len(population)
+    opt.population = population
+    opt._operator_scores = {}
+    opt.candidates_per_operator = 1
+    opt.gate_slack = 0.10
+    opt.eval_sample_size = 50
+    opt.generation = 1
+    opt.best_record = max(population, key=lambda r: r.score) if population else None
+    opt.tracker = _FakeTracker()
+    opt.dataset = _FakeDataset()
+    opt.evaluator = _ScriptedEvaluator(minibatch_scores, dev_scores)
+    opt._maybe_stop_if_perfect = lambda threshold=1.0: None
+    opt._select_operators = lambda: [
+        (name, fn) for name, fn in operator_outputs.items()
+    ]
+    return opt
+
+
+def test_step_gate_passed_candidate_credited_full_dev_improvement():
+    """A candidate that passes the gate must be credited its FULL-DEV score
+    minus the elite-pool baseline -- not a mixed-scale quantity, and not its
+    minibatch score."""
+    parent = PromptRecord(text="parent", score=0.50, id="p1")
+    population = [parent]
+    # Elite pool is just [parent] here, so elite_baseline == 0.50.
+    # A gate-passed candidate scoring 0.60 on full-dev must be credited +0.10.
+    opt = _stepping_apex(
+        operator_outputs={"expert_refine": lambda: [("child-pass", ["p1"])]},
+        minibatch_scores={"child-pass": 0.90},   # >= baseline(0.50) - slack(0.10): passes gate
+        dev_scores={"child-pass": 0.60},
+        population=population,
+    )
+    opt._step()
+    rewards = opt._operator_scores["expert_refine"]
+    assert len(rewards) == 1
+    assert abs(rewards[0] - 0.10) < 1e-9, f"expected +0.10 (0.60 dev - 0.50 elite baseline), got {rewards[0]}"
+
+
+def test_step_gate_rejected_candidate_credited_fixed_penalty_not_scale_mixed_diff():
+    """A gate-REJECTED candidate must be credited exactly -gate_slack, not
+    (its own minibatch score) minus (the parent's full-dev score) -- the
+    scale-mixing bug a review round found in round-1's fix."""
+    parent = PromptRecord(text="parent", score=0.50, id="p1")
+    population = [parent]
+    opt = _stepping_apex(
+        operator_outputs={"failure_guided": lambda: [("child-reject", ["p1"])]},
+        minibatch_scores={"child-reject": 0.10},  # far below baseline(0.50) - slack(0.10): rejected
+        dev_scores={"child-reject": 0.99},  # must NOT be used -- rejected candidates never reach full-dev eval
+        population=population,
+    )
+    opt._step()
+    rewards = opt._operator_scores["failure_guided"]
+    assert len(rewards) == 1
+    assert rewards[0] == -0.10, f"expected exactly -gate_slack (-0.10), got {rewards[0]}"
+
+
+def test_step_null_pull_credited_zero_and_ranks_above_rejected_pull():
+    """A pull producing nothing usable must be credited 0.0, and a rejected
+    pull must be credited strictly less than that -- restoring the ordering
+    (success > null > rejected) that round 1's fix inverted (round 1 credited
+    both null pulls and often rejected pulls near or below 0, but rejected
+    pulls could land anywhere including above 0, since they subtracted a
+    high-noise minibatch score from a full-dev parent score)."""
+    parent = PromptRecord(text="parent", score=0.50, id="p1")
+    population = [parent]
+    opt = _stepping_apex(
+        operator_outputs={
+            "crossover": lambda: [],  # null pull: produces nothing
+            "trajectory": lambda: [("child-reject", ["p1"])],
+        },
+        minibatch_scores={"child-reject": 0.10},
+        dev_scores={},
+        population=population,
+    )
+    opt._step()
+    null_reward = opt._operator_scores["crossover"][0]
+    rejected_reward = opt._operator_scores["trajectory"][0]
+    assert null_reward == 0.0
+    assert rejected_reward < null_reward, (
+        "a rejected (tried-and-failed) pull must rank below a null (did-nothing) pull, "
+        f"got null={null_reward}, rejected={rejected_reward}"
+    )
+
+
+def test_step_reward_baseline_is_shared_elite_pool_not_per_operator_parent():
+    """Two operators recording DIFFERENT parents must be credited against the
+    SAME elite-pool baseline -- round 1's per-candidate-parent baseline gave
+    _op_trajectory (parent = whole population, including weak members) a
+    systematically easier bar than operators drawing from population[:3]/[:4]
+    only. Round 2 fixes this by using one shared baseline per generation."""
+    strong = PromptRecord(text="strong", score=0.80, id="s1")
+    weak = PromptRecord(text="weak", score=0.20, id="w1")
+    # population[:4] is both records here; elite_baseline = mean(0.80, 0.20) = 0.50
+    population = [strong, weak]
+    opt = _stepping_apex(
+        operator_outputs={
+            # "conditions on" only the strong parent
+            "expert_refine": lambda: [("child-a", ["s1"])],
+            # "conditions on" the whole population, including the weak one --
+            # round 1 would have given this a much easier (lower) baseline
+            "trajectory": lambda: [("child-b", ["s1", "w1"])],
+        },
+        minibatch_scores={"child-a": 0.90, "child-b": 0.90},
+        dev_scores={"child-a": 0.55, "child-b": 0.55},
+        population=population,
+    )
+    opt._step()
+    reward_a = opt._operator_scores["expert_refine"][0]
+    reward_b = opt._operator_scores["trajectory"][0]
+    assert abs(reward_a - reward_b) < 1e-9, (
+        f"identical dev scores against the SAME shared baseline must give identical "
+        f"rewards regardless of recorded parent_ids, got expert_refine={reward_a}, trajectory={reward_b}"
+    )
+    assert abs(reward_a - 0.05) < 1e-9  # 0.55 dev - 0.50 elite baseline
+
+
+def test_step_pull_count_still_counts_every_call_regardless_of_outcome():
+    """Regression guard: the round-2 reward rewrite must not have reintroduced
+    the round-1-fixed pull-counting bug. Three pulls (pass, reject, null) on
+    three different arms must each append exactly one _operator_scores entry."""
+    parent = PromptRecord(text="parent", score=0.50, id="p1")
+    population = [parent]
+    opt = _stepping_apex(
+        operator_outputs={
+            "expert_refine": lambda: [("child-pass", ["p1"])],
+            "failure_guided": lambda: [("child-reject", ["p1"])],
+            "crossover": lambda: [],
+        },
+        minibatch_scores={"child-pass": 0.90, "child-reject": 0.10},
+        dev_scores={"child-pass": 0.60},
+        population=population,
+    )
+    opt._step()
+    assert len(opt._operator_scores["expert_refine"]) == 1
+    assert len(opt._operator_scores["failure_guided"]) == 1
+    assert len(opt._operator_scores["crossover"]) == 1
+
+
 if __name__ == "__main__":
     test_select_operators_cold_start_returns_all_seven()
     test_select_operators_never_pulled_arm_beats_a_pulled_one()
@@ -158,4 +353,9 @@ if __name__ == "__main__":
     test_tournament_select_result_is_rank_ordered()
     test_op_few_shot_is_idempotent()
     test_op_format_constraint_is_idempotent()
+    test_step_gate_passed_candidate_credited_full_dev_improvement()
+    test_step_gate_rejected_candidate_credited_fixed_penalty_not_scale_mixed_diff()
+    test_step_null_pull_credited_zero_and_ranks_above_rejected_pull()
+    test_step_reward_baseline_is_shared_elite_pool_not_per_operator_parent()
+    test_step_pull_count_still_counts_every_call_regardless_of_outcome()
     print("OK")

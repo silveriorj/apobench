@@ -43,5 +43,9 @@ line-length = 100
 target-version = "py39"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# "pof/optimizers" added because pof/optimizers/test_apex_bandit.py (the
+# APEX bandit regression suite) lives next to the code it tests, not under
+# tests/ -- a review round found a bare `pytest` invocation from repo root
+# silently collected zero of its tests since testpaths didn't include it.
+testpaths = ["tests", "pof/optimizers"]
 pythonpath = ["."]

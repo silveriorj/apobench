@@ -72,6 +72,11 @@ class APEXOptimizer(BaseOptimizer):
         self.candidates_per_operator = candidates_per_operator
         self.ucb_c = ucb_c
         self._operator_scores: Dict[str, List[float]] = {}
+        # Must match the `slack` passed to _evaluate_with_minibatch_gate below
+        # (base.py's own default is 0.10; kept explicit here, not implicit,
+        # because _step's reward computation for gate-rejected candidates
+        # depends on this exact value -- see _step's docstring).
+        self.gate_slack = 0.10
 
     def _init_population(self) -> List[PromptRecord]:
         """Initialize with expert-persona-generated candidates."""
@@ -103,18 +108,55 @@ class APEXOptimizer(BaseOptimizer):
     def _step(self) -> List[PromptRecord]:
         """Adaptive step: UCB1-select operators and apply them.
 
-        Two mechanisms below were corrected after review found they made the
-        bandit unable to discriminate operators in practice: (1) each pull's
-        outcome is now tracked regardless of whether it produced a usable
-        candidate, so a duplicate-prone or deterministic operator's pull
-        count cannot freeze while `total_pulls` keeps growing (previously
-        this let such an operator's UCB index climb without bound); and (2)
-        the reward credited to an arm is the candidate's fitness IMPROVEMENT
-        over its own parent(s)' score, not its absolute score (previously,
-        since every operator draws parents from the same elite pool,
-        absolute scores clustered within a narrow band while the c=0.5
-        exploration bonus spanned several times that band -- so arm ranking
-        tracked pull count almost exclusively, regardless of reward).
+        Credit assignment history, most recent fix first (kept here because
+        each round's reasoning explains why the previous round's fix was
+        not yet sufficient):
+
+        Round 2 (current). The round-1 improvement-based reward introduced
+        two new problems, both found by review before any run used it: (a)
+        it based each candidate's baseline on its OWN recorded parent(s)'
+        score, but different operators draw parents from structurally
+        different strata -- `_op_semantic_variation` always uses the single
+        best record, `_op_trajectory` uses the WHOLE population (including
+        its worst members) -- so trajectory was credited against a
+        systematically easier bar than every other arm, for bookkeeping
+        reasons unrelated to candidate quality; and (b) it subtracted a
+        gate-rejected candidate's 16-item MINIBATCH score from a parent's
+        full-DEV score, mixing two measurement scales with very different
+        noise, and a pull producing nothing at all was credited exactly
+        0.0 -- which, once rejected pulls could land anywhere from -1 to 0,
+        made "produce nothing" rank ABOVE "produce a real but subpar
+        candidate" more often than not, an incentive that punishes trying.
+
+        Round 2's fix: (a) every reward is now computed against ONE shared
+        reference point per generation -- the mean full-dev score of the
+        current elite pool (population[:4], the same pool `_op_crossover`
+        itself draws two parents from) -- not each candidate's own
+        recorded parent(s). `parent_ids` is untouched and still records
+        real per-operator lineage for the audit trail; it is simply no
+        longer used to compute the reward baseline. (b) A pull is now
+        scored one of three ways, in strictly decreasing order, so "did
+        nothing" can never rank above "tried and got a rejected result":
+        gate-PASSED candidate -> real improvement (full-dev score minus
+        the elite baseline, comparable scale on both sides); gate-REJECTED
+        candidate -> a fixed penalty of -self.gate_slack (worse than doing
+        nothing, but bounded rather than an arbitrary noisy difference of
+        incomparable scales); pull produced NOTHING usable -> 0.0 (neutral,
+        still counted as a pull, never silently dropped).
+
+        Round 1 (superseded, described for context only). Round 1 replaced
+        crediting each arm with a candidate's ABSOLUTE score with crediting
+        fitness improvement, because every operator drew parents from the
+        same elite pool, so absolute scores clustered within a narrow band
+        while the c=0.5 exploration bonus spanned several times that band
+        -- arm ranking tracked pull count almost exclusively, regardless of
+        reward. That diagnosis was correct; round 1's specific
+        implementation of "improvement" was not yet right, per above.
+
+        Pull counting (unaffected by either round above, still correct):
+        each pull's outcome is tracked regardless of whether it produced a
+        usable candidate, so a duplicate-prone or deterministic operator's
+        pull count cannot freeze while `total_pulls` keeps growing.
         """
         self._maybe_stop_if_perfect()
         logger.info(f"[APEX Gen {self.generation}] Adaptive evolution step")
@@ -141,31 +183,32 @@ class APEXOptimizer(BaseOptimizer):
                 pulls.setdefault(op_name, []).append(produced)
 
         # Evaluate new candidates: GEPA-style minibatch gate — fresh random
-        # minibatch filters, survivors get the full dev evaluation.
+        # minibatch filters, survivors get the full dev evaluation. `slack`
+        # passed explicitly so it can never silently drift from
+        # self.gate_slack, which the reward computation below depends on.
         new_candidates = [c for c in candidates if c.score == 0.0]
         baseline = self.best_record.score if self.best_record else 0.0
-        self._evaluate_with_minibatch_gate(new_candidates, baseline)
+        self._evaluate_with_minibatch_gate(new_candidates, baseline, slack=self.gate_slack)
 
-        # Credit assignment: reward = mean fitness improvement of a pull's
-        # produced candidate(s) over their own parent(s)' score at
-        # generation time; a pull producing nothing usable is credited 0.0
-        # (still counted as a pull, never silently dropped).
-        parent_score_by_id = {r.id: r.score for r in self.population}
+        # Shared reward baseline for this generation: the mean full-dev
+        # score of the current elite pool. One reference point for every
+        # arm, rather than each candidate's own (structurally unequal)
+        # parent(s) -- see _step's docstring, "Round 2".
+        elite_pool = self.population[:4] if self.population else []
+        elite_baseline = (
+            sum(r.score for r in elite_pool) / len(elite_pool)
+            if elite_pool else baseline
+        )
+
         for op_name, op_pulls in pulls.items():
             for produced in op_pulls:
                 if produced:
                     rewards = []
                     for record in produced:
-                        parent_scores = [
-                            parent_score_by_id[pid]
-                            for pid in record.parent_ids
-                            if pid in parent_score_by_id
-                        ]
-                        parent_baseline = (
-                            sum(parent_scores) / len(parent_scores)
-                            if parent_scores else baseline
-                        )
-                        rewards.append(record.score - parent_baseline)
+                        if record.metadata.get("gate") == "rejected":
+                            rewards.append(-self.gate_slack)
+                        else:
+                            rewards.append(record.score - elite_baseline)
                     reward = sum(rewards) / len(rewards)
                 else:
                     reward = 0.0
@@ -290,7 +333,10 @@ class APEXOptimizer(BaseOptimizer):
         Full instructions (not truncated fragments) plus task exemplars in
         the meta-prompt, per Yang et al. 2023's ablations. Conditioned on
         the whole population rather than a single parent, so all current
-        population members are recorded as this candidate's parents.
+        population members are recorded as this candidate's parents for
+        the audit-trail genealogy. (This no longer affects credit
+        assignment, which uses one shared elite-pool baseline for every
+        arm regardless of recorded parent_ids -- see _step's docstring.)
         """
         context = "\n".join(
             f"Score: {r.score:.3f}\nInstruction: {r.text}\n"

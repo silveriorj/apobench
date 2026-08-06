@@ -147,8 +147,16 @@ class APEXv2Optimizer(LengthAwareDedupeMixin, APEXOptimizer):
         if not new_records:
             return selected
         baseline = self.best_record.score if self.best_record else 0.0
-        self._evaluate_with_minibatch_gate(new_records, baseline)
-        return self._tournament_select(selected + new_records)
+        self._evaluate_with_minibatch_gate(new_records, baseline, slack=self.gate_slack)
+        # Re-sort after tournament: v1's _step() re-sorts its own output for
+        # exactly this reason (population[:k] must be rank-ordered for the
+        # elite-indexing operators), but this method builds ITS OWN final
+        # population from selected+new_records after calling super()._step(),
+        # so it needs the same re-sort independently -- inheriting the fix
+        # via super() does not cover output this method assembles itself.
+        final = self._tournament_select(selected + new_records)
+        final.sort(key=lambda r: r.score, reverse=True)
+        return final
 
     def _op_format_constraint_from(self, record: "PromptRecord") -> List[str]:
         """Same rule as v1's _op_format_constraint, applied to a specific record
