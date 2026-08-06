@@ -52,7 +52,7 @@ METHODS = ["swift", "apex", "capo", "gaapo", "see", "gepa",
            "funnel_v4a", "funnel_v4b", "funnel_v4c", "funnel_v4d",
            "funnel_lean", "funnel_v5", "funnel_wide",
            "funnel_v6", "funnel_indexed", "funnel_v7", "funnel_prime",
-           "apex_lean"]  # Methods to run
+           "apex_lean", "baseline_seed"]  # Methods to run
 
 # Random seeds for statistical robustness (3 runs per configuration)
 SEEDS = [42, 123, 7]
