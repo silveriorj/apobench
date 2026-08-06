@@ -33,9 +33,23 @@ class BaselineSeedOptimizer(BaseOptimizer):
     def _init_population(self) -> List[PromptRecord]:
         if not self.seed_prompt:
             raise ValueError(f"[{self.name}] requires a seed_prompt; none provided")
-        record = self._create_record(self.seed_prompt, operator="seed")
-        self._evaluate_population([record])
-        return [record]
+        return [self._create_record(self.seed_prompt, operator="seed")]
+
+    def _evaluate_population(self, population: List[PromptRecord]) -> None:
+        """No-op: skip the dev-set pass entirely.
+
+        `BaseOptimizer.optimize()` unconditionally evaluates the population
+        on the dev split right after `_init_population()` -- overriding
+        `_init_population` alone doesn't skip it, since that call lives in
+        the template method, not delegated to a hook. There is exactly one
+        candidate and no search here, so a dev score only picks a winner
+        among candidates that don't exist; it costs a full dev-set eval pass
+        (the dominant cost of a baseline_seed run) for a number nothing
+        downstream reads. The runner's own held-out test evaluation, run on
+        `best_record` regardless of dev score, is the only number this
+        method reports.
+        """
+        return
 
     def _step(self) -> List[PromptRecord]:
         raise StopIteration
