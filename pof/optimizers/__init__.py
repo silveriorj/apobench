@@ -69,6 +69,7 @@ def _load_all():
     from pof.optimizers import funnel_v6  # noqa: F401
     from pof.optimizers import funnel_v7  # noqa: F401
     from pof.optimizers import apex_lean  # noqa: F401
+    from pof.optimizers import apex_holdout  # noqa: F401
     from pof.optimizers import baseline  # noqa: F401
 
 

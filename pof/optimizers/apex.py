@@ -305,7 +305,7 @@ class APEXOptimizer(BaseOptimizer):
 
         details = record.per_sample_details
         if not details and record.text:
-            samples = self.dataset.get_eval_samples("dev", n=self.eval_sample_size)
+            samples = self._sample_dev(self.eval_sample_size)
             result = self.evaluator.evaluate(record.text, samples)
             details = result.per_sample_details
             record.per_sample_details = details

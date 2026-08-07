@@ -287,9 +287,22 @@ class BaseOptimizer(ABC):
 
     # --- Shared helpers ---
 
+    def _sample_dev(self, n: Optional[int], seed: int = 42) -> List[Dict[str, str]]:
+        """Sample dev-set instances for candidate evaluation.
+
+        Draws from `self.dataset`'s full dev split by default. Subclasses
+        that reserve a held-out selection slice (e.g. an optimizer using
+        `HoldoutSelectionMixin`) override this to sample only from the
+        search-visible portion, keeping the held-out slice genuinely unseen
+        by every operator/gate/population eval -- otherwise the final
+        `_select_on_holdout` re-ranking would be picking among finalists on
+        data the search had already touched, defeating the point.
+        """
+        return self.dataset.get_eval_samples("dev", n=n, seed=seed)
+
     def _evaluate_population(self, population: List[PromptRecord]) -> None:
         """Evaluate all candidates in the population."""
-        samples = self.dataset.get_eval_samples("dev", n=self.eval_sample_size)
+        samples = self._sample_dev(self.eval_sample_size)
         to_eval = [r for r in population if r.score == 0.0 and r.text]
         logger.debug(f"[Pop eval] {len(to_eval)} candidates to evaluate")
         for idx, record in enumerate(to_eval, start=1):
@@ -308,7 +321,7 @@ class BaseOptimizer(ABC):
         self, candidates: List[PromptRecord], baseline_score: float
     ) -> List[PromptRecord]:
         """Evaluate candidates with racing against baseline."""
-        samples = self.dataset.get_eval_samples("dev", n=self.eval_sample_size)
+        samples = self._sample_dev(self.eval_sample_size)
         for record in candidates:
             if record.text:
                 result = self.evaluator.evaluate_with_racing(
@@ -337,10 +350,8 @@ class BaseOptimizer(ABC):
         Rejected candidates keep their minibatch score (they rank low and
         drop out at selection) and are marked in metadata for the audit.
         """
-        minibatch = self.dataset.get_eval_samples(
-            "dev", n=minibatch_size, seed=random.randint(0, 10**6)
-        )
-        full_samples = self.dataset.get_eval_samples("dev", n=self.eval_sample_size)
+        minibatch = self._sample_dev(minibatch_size, seed=random.randint(0, 10**6))
+        full_samples = self._sample_dev(self.eval_sample_size)
 
         n_pass = 0
         for record in candidates:
