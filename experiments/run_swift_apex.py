@@ -47,6 +47,8 @@ logger = logging.getLogger(__name__)
 # EXPERIMENT MATRIX
 # =============================================================================
 
+GENERIC_PROMPT = "Solve the following problem correctly."
+
 METHODS = ["swift", "apex", "capo", "gaapo", "see", "gepa",
            "swift_v2", "apex_v2", "funnel", "funnel_v2", "funnel_v3",
            "funnel_v4a", "funnel_v4b", "funnel_v4c", "funnel_v4d",
@@ -426,6 +428,7 @@ def run_experiment(
     dry_run: bool = False,
     cot_mode: str = "",
     dev_test_split: float = 0.0,
+    generic_prompt: bool = False,
 ):
     """Run the full experiment matrix with multiple seeds (and optionally models).
 
@@ -448,6 +451,12 @@ def run_experiment(
         dev_test_split: Fraction of the post-train BBH pool given to dev (rest
             to test), e.g. 0.5 for an even 50/50 split. 0.0 (default)
             preserves the original fixed-size split (test capped at 115).
+        generic_prompt: If True, replace every task's fetched seed prompt
+            with a fixed generic instruction (GENERIC_PROMPT), carrying no
+            task-specific wording or worked examples. Isolates how much of
+            measured performance comes from prompt engineering vs. the
+            model's raw zero-shot ability, given only the eval harness's own
+            system prompt for output format.
     """
     methods = methods or METHODS
     datasets_to_run = datasets or list(DATASETS.keys())
@@ -521,13 +530,22 @@ def run_experiment(
                 # output reasoning instead of {"answer": "X"}. Either CoT mode
                 # flips this: the whole run uses a CoT task_type, which wants
                 # (and was validated with) the full worked-example prompt.
-                use_full = bool(cot_mode)
-                try:
-                    seed_prompt = get_seed_prompt(dataset, task, use_full_prompt=use_full)
-                    logger.info(f"Loaded seed prompt for {dataset}/{task} ({len(seed_prompt)} chars)")
-                except Exception as e:
-                    logger.error(f"Failed to load seed prompt for {dataset}/{task}: {e}")
-                    seed_prompt = ""
+                if generic_prompt:
+                    # No task-specific instruction or worked examples at all --
+                    # isolates how much of measured performance comes from
+                    # prompt engineering vs. the model's raw zero-shot ability
+                    # on this task, given only the eval harness's own system
+                    # prompt (which still specifies output format).
+                    seed_prompt = GENERIC_PROMPT
+                    logger.info(f"Using generic prompt for {dataset}/{task} (no task-specific text)")
+                else:
+                    use_full = bool(cot_mode)
+                    try:
+                        seed_prompt = get_seed_prompt(dataset, task, use_full_prompt=use_full)
+                        logger.info(f"Loaded seed prompt for {dataset}/{task} ({len(seed_prompt)} chars)")
+                    except Exception as e:
+                        logger.error(f"Failed to load seed prompt for {dataset}/{task}: {e}")
+                        seed_prompt = ""
 
                 for method in methods:
                     task_label = f"{dataset}/{task}" if task else dataset
@@ -731,6 +749,14 @@ def main():
              "remainder). Tests whether a larger, evenly-sized dev pool lets "
              "search gains actually transfer to test.",
     )
+    parser.add_argument(
+        "--generic-prompt", action="store_true",
+        help="Replace every task's fetched seed prompt with a fixed generic "
+             "instruction carrying no task-specific wording or worked "
+             "examples (GENERIC_PROMPT). Isolates how much measured "
+             "performance comes from prompt engineering vs. the model's raw "
+             "zero-shot ability on the task.",
+    )
 
     args = parser.parse_args()
     if args.cot and args.cot_brief:
@@ -748,6 +774,7 @@ def main():
         dev_test_split=args.dev_test_split,
         dry_run=args.dry_run,
         cot_mode=cot_mode,
+        generic_prompt=args.generic_prompt,
     )
 
 
