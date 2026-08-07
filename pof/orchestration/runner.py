@@ -274,6 +274,7 @@ class RunOrchestrator:
             max_new_tokens=self.config.evaluation.max_new_tokens,
             temperature=self.config.evaluation.temperature,
             batch_size=self.config.evaluation.batch_size,
+            system_prompt=self.config.evaluation.system_prompt_override,
         )
 
     def _save_result(self, result: OptimizationResult) -> None:

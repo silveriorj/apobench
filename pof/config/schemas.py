@@ -41,6 +41,13 @@ class EvalConfig(BaseModel):
     racing_enabled: bool = Field(default=True, description="Enable Hoeffding racing")
     racing_confidence: float = Field(default=0.05, description="Racing confidence level (alpha)")
     racing_min_samples: int = Field(default=10, description="Minimum samples before racing")
+    system_prompt_override: Optional[str] = Field(
+        default=None,
+        description="If set (including empty string), used verbatim as the eval "
+        "system prompt instead of the task_type-based default. Empty string strips "
+        "the format-enforcing scaffolding entirely -- e.g. to isolate how much of "
+        "a CoT run's score comes from that scaffolding vs. the seed prompt itself.",
+    )
 
 
 class BudgetConfig(BaseModel):

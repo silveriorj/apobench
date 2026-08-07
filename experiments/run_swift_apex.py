@@ -330,6 +330,7 @@ def build_run_config(
     output_root: str = "outputs/swift_apex_benchmark",
     cot_mode: str = "",
     dev_test_split: float = 0.0,
+    strip_system_prompt: bool = False,
 ) -> RunConfig:
     """Build a RunConfig for a specific method/dataset/task/model combination.
 
@@ -363,16 +364,19 @@ def build_run_config(
         dataset_overrides["task_type"] = eval_task_type
     if dev_test_split > 0.0:
         dataset_overrides["dev_test_split"] = dev_test_split
+    eval_overrides: Dict[str, Any] = {
+        "max_new_tokens": eval_max_tokens,
+        "batch_size": eval_batch_size,
+    }
+    if strip_system_prompt:
+        eval_overrides["system_prompt_override"] = ""
     overrides: Dict[str, Any] = {
         "optimizer": {
             "method": method,
             "seed_prompt": seed_prompt,
         },
         "dataset": dataset_overrides,
-        "evaluation": {
-            "max_new_tokens": eval_max_tokens,
-            "batch_size": eval_batch_size,
-        },
+        "evaluation": eval_overrides,
         "budget": {
             "time_seconds": eval_time_budget,
         },
@@ -429,6 +433,7 @@ def run_experiment(
     cot_mode: str = "",
     dev_test_split: float = 0.0,
     generic_prompt: bool = False,
+    strip_system_prompt: bool = False,
 ):
     """Run the full experiment matrix with multiple seeds (and optionally models).
 
@@ -457,6 +462,13 @@ def run_experiment(
             measured performance comes from prompt engineering vs. the
             model's raw zero-shot ability, given only the eval harness's own
             system prompt for output format.
+        strip_system_prompt: If True, use an empty eval system prompt instead
+            of the task_type default (e.g. _THINKING_EVAL_SYSTEM_PROMPT under
+            --cot). Isolates how much of a run's score comes from the
+            format-enforcing scaffolding (e.g. "end with \\boxed{X}") vs. the
+            seed prompt / model's own reasoning tendencies. Orthogonal to
+            generic_prompt -- combine both to test raw capability with
+            neither task-specific instruction nor format scaffolding.
     """
     methods = methods or METHODS
     datasets_to_run = datasets or list(DATASETS.keys())
@@ -593,6 +605,7 @@ def run_experiment(
                                 output_root=output_root,
                                 cot_mode=cot_mode,
                                 dev_test_split=dev_test_split,
+                                strip_system_prompt=strip_system_prompt,
                             )
 
                             from pof.orchestration.runner import RunOrchestrator
@@ -757,6 +770,16 @@ def main():
              "performance comes from prompt engineering vs. the model's raw "
              "zero-shot ability on the task.",
     )
+    parser.add_argument(
+        "--strip-system-prompt", action="store_true",
+        help="Use an empty eval system prompt instead of the task_type "
+             "default (e.g. under --cot, drops the \\boxed{X} format "
+             "instruction). Isolates how much of a run's score comes from "
+             "that scaffolding vs. the seed prompt / model's own reasoning "
+             "tendencies. Combine with --generic-prompt to test raw "
+             "capability with neither task-specific instruction nor format "
+             "scaffolding.",
+    )
 
     args = parser.parse_args()
     if args.cot and args.cot_brief:
@@ -775,6 +798,7 @@ def main():
         dry_run=args.dry_run,
         cot_mode=cot_mode,
         generic_prompt=args.generic_prompt,
+        strip_system_prompt=args.strip_system_prompt,
     )
 
 

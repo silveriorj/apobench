@@ -99,11 +99,20 @@ class Evaluator:
         max_new_tokens: int = 32,
         temperature: float = 0.0,
         batch_size: int = 8,
+        system_prompt: Optional[str] = None,
     ):
         self.llm = llm
         self.score_fn = score_fn or create_score_function(task_type)
         self.task_type = task_type
-        self.system_prompt = SYSTEM_PROMPT_BY_TASK_TYPE.get(task_type, _EVAL_SYSTEM_PROMPT)
+        # None (default) -> auto-select by task_type, same as before. Any
+        # string (including "") -> use it verbatim, e.g. to strip the eval
+        # harness's format-enforcing system prompt entirely and isolate how
+        # much of a CoT run's score comes from that scaffolding vs. the
+        # seed prompt / model's own reasoning tendencies.
+        self.system_prompt = (
+            system_prompt if system_prompt is not None
+            else SYSTEM_PROMPT_BY_TASK_TYPE.get(task_type, _EVAL_SYSTEM_PROMPT)
+        )
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.batch_size = batch_size
