@@ -327,6 +327,7 @@ def build_run_config(
     model_name: Optional[str] = None,
     output_root: str = "outputs/swift_apex_benchmark",
     cot_mode: str = "",
+    dev_test_split: float = 0.0,
 ) -> RunConfig:
     """Build a RunConfig for a specific method/dataset/task/model combination.
 
@@ -358,6 +359,8 @@ def build_run_config(
     dataset_overrides: Dict[str, Any] = {"name": dataset, "task": task}
     if eval_task_type:
         dataset_overrides["task_type"] = eval_task_type
+    if dev_test_split > 0.0:
+        dataset_overrides["dev_test_split"] = dev_test_split
     overrides: Dict[str, Any] = {
         "optimizer": {
             "method": method,
@@ -422,6 +425,7 @@ def run_experiment(
     output_dir: Optional[str] = None,
     dry_run: bool = False,
     cot_mode: str = "",
+    dev_test_split: float = 0.0,
 ):
     """Run the full experiment matrix with multiple seeds (and optionally models).
 
@@ -441,6 +445,9 @@ def run_experiment(
             keeps it a fair comparison rather than a one-off tweak.
         output_dir: Root output directory. Overrides the YAML's output_dir.
         dry_run: If True, only print what would be run.
+        dev_test_split: Fraction of the post-train BBH pool given to dev (rest
+            to test), e.g. 0.5 for an even 50/50 split. 0.0 (default)
+            preserves the original fixed-size split (test capped at 115).
     """
     methods = methods or METHODS
     datasets_to_run = datasets or list(DATASETS.keys())
@@ -567,6 +574,7 @@ def run_experiment(
                                 model_name=model,
                                 output_root=output_root,
                                 cot_mode=cot_mode,
+                                dev_test_split=dev_test_split,
                             )
 
                             from pof.orchestration.runner import RunOrchestrator
@@ -715,6 +723,14 @@ def main():
              "most of full CoT's accuracy gain survives without paying for a "
              "long trace. Mutually exclusive with --cot.",
     )
+    parser.add_argument(
+        "--dev-test-split", type=float, default=0.0,
+        help="Fraction of the post-train BBH pool given to dev, rest to test "
+             "(e.g. 0.5 for an even 50/50 split). Default 0.0 preserves the "
+             "original fixed-size split (test capped at 115, dev gets the "
+             "remainder). Tests whether a larger, evenly-sized dev pool lets "
+             "search gains actually transfer to test.",
+    )
 
     args = parser.parse_args()
     if args.cot and args.cot_brief:
@@ -729,6 +745,7 @@ def main():
         models=args.models,
         config_path=args.config,
         output_dir=args.output_dir,
+        dev_test_split=args.dev_test_split,
         dry_run=args.dry_run,
         cot_mode=cot_mode,
     )

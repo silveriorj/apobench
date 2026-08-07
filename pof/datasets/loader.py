@@ -143,6 +143,7 @@ def load_dataset_by_name(
     task: str = "",
     num_samples: int = 100,
     seed: int = 42,
+    dev_test_split: float = 0.0,
 ) -> TaskDataset:
     """Load a dataset by name.
 
@@ -151,12 +152,16 @@ def load_dataset_by_name(
         task: Specific task within dataset (e.g., BBH task name).
         num_samples: Total samples to load.
         seed: Random seed.
+        dev_test_split: Fraction of the post-train pool given to dev (rest to
+            test). 0.0 (default) preserves the original fixed-size split
+            (test capped at 115, dev gets the remainder). Only applied by
+            BBH loading; other datasets ignore it.
 
     Returns:
         TaskDataset instance.
     """
     if name.lower() == "bbh":
-        return _load_bbh(task, num_samples, seed)
+        return _load_bbh(task, num_samples, seed, dev_test_split=dev_test_split)
     elif name.lower() in ("livebench_math", "livebench/math"):
         return _load_livebench_math(task, num_samples, seed)
     elif name.lower() == "gsm8k":
@@ -173,7 +178,7 @@ def load_dataset_by_name(
         )
 
 
-def _load_bbh(task: str, num_samples: int, seed: int) -> TaskDataset:
+def _load_bbh(task: str, num_samples: int, seed: int, dev_test_split: float = 0.0) -> TaskDataset:
     """Load a BigBench-Hard task from HuggingFace."""
     try:
         from datasets import load_dataset as hf_load_dataset
@@ -225,18 +230,30 @@ def _load_bbh(task: str, num_samples: int, seed: int) -> TaskDataset:
     rng = random.Random(TEST_SPLIT_SEED)
     rng.shuffle(all_samples)
 
-    # Fixed-size splits: test is reserved first (held-out, fixed at 115),
-    # train (few-shot) takes 8, dev gets everything else (≥50 for candidate eval).
-    # BBH tasks have 187-250 examples, so dev ends up with 64-127 samples.
-    # Small tasks (e.g. penguins_in_a_table, 146 examples) shrink train to 3
-    # and the dev floor to 33 so the held-out test stays as close to 115 as possible.
-    if len(all_samples) >= 8 + 50 + 115:
+    if dev_test_split > 0.0:
+        # Even split mode: train takes a fixed few-shot pool, dev/test split
+        # the remainder by the requested ratio (e.g. 0.5 -> 50/50). Exists to
+        # test whether the small default dev pool (see fixed-size branch
+        # below) was starving the optimizer of statistical power -- APO gains
+        # measured on ~50-instance dev did not transfer to test (corr
+        # -0.695); a larger, evenly-sized dev pool is the direct fix.
+        n_train = 8 if len(all_samples) >= 8 + 20 else 3
+        pool = len(all_samples) - n_train
+        n_dev = max(1, round(pool * dev_test_split))
+        n_test = pool - n_dev
+    elif len(all_samples) >= 8 + 50 + 115:
+        # Fixed-size splits: test is reserved first (held-out, fixed at 115),
+        # train (few-shot) takes 8, dev gets everything else (≥50 for candidate eval).
+        # BBH tasks have 187-250 examples, so dev ends up with 64-127 samples.
+        # Small tasks (e.g. penguins_in_a_table, 146 examples) shrink train to 3
+        # and the dev floor to 33 so the held-out test stays as close to 115 as possible.
         n_train = 8
         n_test = min(115, max(1, len(all_samples) - n_train - 50))
+        n_dev = len(all_samples) - n_test - n_train
     else:
         n_train = 3
         n_test = min(115, max(1, len(all_samples) - n_train - 33))
-    n_dev = len(all_samples) - n_test - n_train
+        n_dev = len(all_samples) - n_test - n_train
 
     test = all_samples[:n_test]
     _rest = all_samples[n_test:]

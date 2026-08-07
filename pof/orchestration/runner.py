@@ -241,6 +241,7 @@ class RunOrchestrator:
                 task=self.config.dataset.task,
                 num_samples=self.config.dataset.num_samples,
                 seed=self.config.seed,
+                dev_test_split=self.config.dataset.dev_test_split,
             )
         return self._dataset
 

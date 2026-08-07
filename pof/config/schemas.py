@@ -75,6 +75,12 @@ class DatasetConfig(BaseModel):
     num_samples: int = Field(default=100, description="Number of samples to load")
     num_few_shot: int = Field(default=3, description="Number of few-shot examples")
     task_type: str = Field(default="", description="Override task_type; empty = auto-detect from data")
+    dev_test_split: float = Field(
+        default=0.0,
+        description="Fraction of the post-train pool given to dev (rest to test), e.g. 0.5 "
+        "for an even 50/50 split. 0.0 (default) preserves the original fixed-size split "
+        "(test capped at 115, dev gets the remainder).",
+    )
 
 
 class RunConfig(BaseModel):
