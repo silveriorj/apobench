@@ -49,6 +49,18 @@ logger = logging.getLogger(__name__)
 
 GENERIC_PROMPT = "Solve the following problem correctly."
 
+# Minimal universal format cue -- unlike the per-task_type system prompts
+# (_THINKING_EVAL_SYSTEM_PROMPT's \boxed{X}, _DYCK_EVAL_SYSTEM_PROMPT's stack
+# notation, etc.), this is ONE short instruction applied uniformly across
+# every task, deliberately not tailored per-task. Uses "Answer: X" because
+# pof/evaluation/scoring.py's _extract_cot_answer already recognizes that
+# pattern as a fallback (after \boxed{} and "the answer is X"), so this
+# isn't testing a made-up format the scorer can't parse.
+SIMPLE_SYSTEM_PROMPT = (
+    "Think through the problem, then end your response with a final line "
+    "in exactly this format: Answer: X"
+)
+
 METHODS = ["swift", "apex", "capo", "gaapo", "see", "gepa",
            "swift_v2", "apex_v2", "funnel", "funnel_v2", "funnel_v3",
            "funnel_v4a", "funnel_v4b", "funnel_v4c", "funnel_v4d",
@@ -331,6 +343,7 @@ def build_run_config(
     cot_mode: str = "",
     dev_test_split: float = 0.0,
     strip_system_prompt: bool = False,
+    simple_system_prompt: bool = False,
 ) -> RunConfig:
     """Build a RunConfig for a specific method/dataset/task/model combination.
 
@@ -370,6 +383,8 @@ def build_run_config(
     }
     if strip_system_prompt:
         eval_overrides["system_prompt_override"] = ""
+    elif simple_system_prompt:
+        eval_overrides["system_prompt_override"] = SIMPLE_SYSTEM_PROMPT
     overrides: Dict[str, Any] = {
         "optimizer": {
             "method": method,
@@ -434,6 +449,7 @@ def run_experiment(
     dev_test_split: float = 0.0,
     generic_prompt: bool = False,
     strip_system_prompt: bool = False,
+    simple_system_prompt: bool = False,
 ):
     """Run the full experiment matrix with multiple seeds (and optionally models).
 
@@ -469,6 +485,13 @@ def run_experiment(
             seed prompt / model's own reasoning tendencies. Orthogonal to
             generic_prompt -- combine both to test raw capability with
             neither task-specific instruction nor format scaffolding.
+        simple_system_prompt: If True, use one short, task-type-agnostic
+            format cue (SIMPLE_SYSTEM_PROMPT, "...Answer: X") instead of the
+            per-task_type default. A middle ground between the full scaffolding
+            and strip_system_prompt's nothing-at-all: tests whether a minimal
+            universal cue recovers what strip_system_prompt collapsed, without
+            the task-tailored elaboration of the default prompts. Mutually
+            exclusive with strip_system_prompt (strip wins if both are set).
     """
     methods = methods or METHODS
     datasets_to_run = datasets or list(DATASETS.keys())
@@ -606,6 +629,7 @@ def run_experiment(
                                 cot_mode=cot_mode,
                                 dev_test_split=dev_test_split,
                                 strip_system_prompt=strip_system_prompt,
+                                simple_system_prompt=simple_system_prompt,
                             )
 
                             from pof.orchestration.runner import RunOrchestrator
@@ -780,8 +804,19 @@ def main():
              "capability with neither task-specific instruction nor format "
              "scaffolding.",
     )
+    parser.add_argument(
+        "--simple-system-prompt", action="store_true",
+        help="Use one short, task-type-agnostic format cue "
+             "(SIMPLE_SYSTEM_PROMPT, ending in 'Answer: X') instead of the "
+             "per-task_type default. Middle ground between the full "
+             "scaffolding and --strip-system-prompt's nothing-at-all -- tests "
+             "whether a minimal universal cue recovers what stripping "
+             "collapsed. Mutually exclusive with --strip-system-prompt.",
+    )
 
     args = parser.parse_args()
+    if args.strip_system_prompt and args.simple_system_prompt:
+        parser.error("--strip-system-prompt and --simple-system-prompt are mutually exclusive")
     if args.cot and args.cot_brief:
         parser.error("--cot and --cot-brief are mutually exclusive")
     cot_mode = "full" if args.cot else "brief" if args.cot_brief else ""
@@ -799,6 +834,7 @@ def main():
         cot_mode=cot_mode,
         generic_prompt=args.generic_prompt,
         strip_system_prompt=args.strip_system_prompt,
+        simple_system_prompt=args.simple_system_prompt,
     )
 
 
