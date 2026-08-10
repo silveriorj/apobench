@@ -52,13 +52,21 @@ GENERIC_PROMPT = "Solve the following problem correctly."
 # Minimal universal format cue -- unlike the per-task_type system prompts
 # (_THINKING_EVAL_SYSTEM_PROMPT's \boxed{X}, _DYCK_EVAL_SYSTEM_PROMPT's stack
 # notation, etc.), this is ONE short instruction applied uniformly across
-# every task, deliberately not tailored per-task. Uses "Answer: X" because
-# pof/evaluation/scoring.py's _extract_cot_answer already recognizes that
-# pattern as a fallback (after \boxed{} and "the answer is X"), so this
-# isn't testing a made-up format the scorer can't parse.
+# every task, deliberately not tailored per-task by this project -- but it
+# borrows Qwen's own documented eval conventions (Qwen2.5 technical report /
+# eval harness recommendations) rather than inventing an arbitrary format:
+# math -> step-by-step reasoning ending in \boxed{}, MCQ -> answer with the
+# option letter directly. Falls back to "Answer: X" for anything that's
+# neither, which pof/evaluation/scoring.py's _extract_cot_answer already
+# recognizes (after \boxed{} and "the answer is X"), so nothing here is a
+# made-up format the scorer can't parse.
 SIMPLE_SYSTEM_PROMPT = (
-    "Think through the problem, then end your response with a final line "
-    "in exactly this format: Answer: X"
+    "Solve the following problem correctly. "
+    "If it is a math problem, reason step by step and put your final answer "
+    "within \\boxed{}. "
+    "If it provides multiple-choice options, answer with the option's "
+    "letter directly. "
+    "Otherwise, end your response with the final line: Answer: X"
 )
 
 METHODS = ["swift", "apex", "capo", "gaapo", "see", "gepa",
