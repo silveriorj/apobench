@@ -1,13 +1,15 @@
 """Prompt loader — fetch and cache initial prompts from GitHub repositories.
 
 Supports:
-- BBH prompts from EvoPrompt repo (per-task .txt files)
+- BBH prompts from Joschka/big_bench_hard (HF dataset; same source used by
+  the UK AISI's inspect_evals BBH implementation, see fetch_bbh_prompt_v2)
 - GSM8K prompts from chain-of-thought-hub
 - Local file loading
 - Caching to avoid repeated downloads
 """
 from __future__ import annotations
 
+import json
 import logging
 import urllib.request
 from pathlib import Path
@@ -18,10 +20,24 @@ logger = logging.getLogger(__name__)
 # Cache directory
 CACHE_DIR = Path(".cache/prompts")
 
-# BBH prompt source (chain-of-thought-hub)
+# BBH prompt source (chain-of-thought-hub) -- get_seed_prompt() now sources
+# BBH from Joschka/big_bench_hard instead (see fetch_bbh_prompt_v2), but
+# fetch_bbh_prompt/extract_instruction below are still used directly by
+# apex_lean.py, funnel_v4b.py, and experiments/bbh_reference_baseline.py.
 BBH_PROMPT_BASE_URL = (
     "https://raw.githubusercontent.com/FranxYao/chain-of-thought-hub/main/BBH/lib_prompt"
 )
+
+# BBH prompt source used by get_seed_prompt: Joschka/big_bench_hard, a
+# curated HF dataset with pre-separated answer_only_prompt and
+# chain_of_thought_prompt fields per task -- this is the exact dataset the
+# UK AISI's inspect_evals BBH implementation uses (see
+# https://github.com/UKGovernmentBEIS/inspect_evals/blob/main/src/inspect_evals/bbh/bbh.py),
+# so adopting it lets our seed prompts cite a maintained, versioned source
+# instead of scraping raw .txt files from chain-of-thought-hub and
+# reimplementing our own (fragile) first-line instruction extraction.
+BBH_HF_DATASET_PATH = "Joschka/big_bench_hard"
+BBH_HF_DATASET_REVISION = "76eaa8c29ad448752cd44201a1246618e2454cac"
 
 # GSM8K prompt source (chain-of-thought-hub) — mid CoT: "Let's think step by step" + "The answer is N"
 GSM8K_PROMPT_URL = (
@@ -130,6 +146,64 @@ def fetch_gsm8k_prompt(cache: bool = True) -> str:
     return content
 
 
+def fetch_bbh_prompt_v2(task: str, cache: bool = True) -> dict:
+    """Fetch both the answer-only and chain-of-thought seed prompts for a
+    BBH task from Joschka/big_bench_hard's `few_shot_prompts` config.
+
+    Unlike the retired fetch_bbh_prompt() (chain-of-thought-hub .txt scrape
+    + first-line heuristic for the answer-only variant), this dataset
+    curates both prompt variants directly per task -- no string-slicing
+    guesswork needed to get a real answer-only prompt.
+
+    Returns:
+        Dict with 'answer_only_prompt' and 'chain_of_thought_prompt' keys.
+    """
+    cache_path = CACHE_DIR / "bbh_v2" / f"{task}.json"
+    if cache and cache_path.exists():
+        logger.debug(f"Loading cached BBH v2 prompt for '{task}'")
+        return json.loads(cache_path.read_text(encoding="utf-8"))
+
+    try:
+        from datasets import load_dataset as hf_load_dataset
+    except ImportError:
+        raise RuntimeError(
+            "'datasets' package required. Run: pip install datasets"
+        )
+
+    logger.info(
+        f"Fetching BBH v2 prompts for '{task}' from {BBH_HF_DATASET_PATH} "
+        "(few_shot_prompts config)"
+    )
+    try:
+        prompts_dataset = hf_load_dataset(
+            BBH_HF_DATASET_PATH,
+            "few_shot_prompts",
+            split="few_shot_prompts",
+            revision=BBH_HF_DATASET_REVISION,
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to fetch BBH few_shot_prompts from {BBH_HF_DATASET_PATH}: {e}"
+        ) from e
+
+    row = next((r for r in prompts_dataset if r["dataset_name"] == task), None)
+    if row is None:
+        raise ValueError(
+            f"No prompts found for BBH task '{task}' in {BBH_HF_DATASET_PATH}"
+        )
+    result = {
+        "answer_only_prompt": row["answer_only_prompt"],
+        "chain_of_thought_prompt": row["chain_of_thought_prompt"],
+    }
+
+    if cache:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(result), encoding="utf-8")
+        logger.debug(f"Cached BBH v2 prompt to {cache_path}")
+
+    return result
+
+
 def extract_instruction(prompt_text: str) -> str:
     """Extract just the instruction (first line) from a full prompt file.
 
@@ -163,10 +237,10 @@ def get_seed_prompt(
     if dataset.lower() == "bbh":
         if not task:
             raise ValueError("Task name required for BBH dataset")
-        content = fetch_bbh_prompt(task, cache=cache)
+        prompts = fetch_bbh_prompt_v2(task, cache=cache)
         if use_full_prompt:
-            return content
-        return extract_instruction(content)
+            return prompts["chain_of_thought_prompt"]
+        return prompts["answer_only_prompt"]
 
     elif dataset.lower() == "gsm8k":
         return (
