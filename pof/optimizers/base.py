@@ -165,9 +165,18 @@ class BaseOptimizer(ABC):
             no_improve = 0
 
             for i in range(effective_iters):
-                # Global budget stop check
-                if budget_mgr and budget_mgr.should_stop() is not None:
-                    logger.info(f"Budget exhausted before generation {self.generation+1}, stopping optimization")
+                # Global budget stop check. Uses should_stop_for_search(),
+                # not should_stop(), so a fixed slice of the time budget is
+                # always left over for _finalize() (e.g. holdout
+                # re-ranking) below -- otherwise a search that runs to the
+                # true budget edge starves _finalize() of any time to run,
+                # silently falling back to uncorrected selection.
+                stop_reason = budget_mgr.should_stop_for_search() if budget_mgr else None
+                if stop_reason is not None:
+                    logger.info(
+                        f"Budget exhausted before generation {self.generation+1} "
+                        f"({stop_reason}), stopping optimization"
+                    )
                     break
 
                 self.generation += 1

@@ -62,6 +62,25 @@ class BudgetManager:
         elapsed = time.time() - self.start_time
         return max(0.0, self.config.time_seconds - elapsed)
 
+    def remaining_search_time(self) -> Optional[float]:
+        """Like remaining_time(), but reserves a slice for _finalize().
+
+        The optimization loop should check this (not remaining_time()) when
+        deciding whether to start another generation, so a fixed slice of
+        the time budget is always left over for post-search work like
+        holdout re-ranking. Per-call hard enforcement (_ensure_call_possible)
+        still uses the true remaining_time(), so this reserve is advisory
+        for the loop, not a second hard cap.
+        """
+        rt = self.remaining_time()
+        if rt is None:
+            return None
+        reserve = max(
+            self.config.finalize_reserve_min_seconds,
+            (self.config.time_seconds or 0) * self.config.finalize_reserve_fraction,
+        )
+        return max(0.0, rt - reserve)
+
     def remaining_calls(self) -> Optional[int]:
         if self.config.max_calls is None:
             return None
@@ -107,6 +126,15 @@ class BudgetManager:
         if rot is not None and rot <= 0:
             return "output_tokens"
         return None
+
+    def should_stop_for_search(self) -> Optional[str]:
+        """Like should_stop(), but treats the finalize time reserve as the
+        time cap. Use this to decide whether to start another optimization
+        generation; use should_stop() for the true hard per-call cap."""
+        rst = self.remaining_search_time()
+        if rst is not None and rst <= 0.0:
+            return "time_reserved_for_finalize"
+        return self.should_stop()
 
     # ---- Per-call planning ----
 

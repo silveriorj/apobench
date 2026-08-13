@@ -60,6 +60,19 @@ class BudgetConfig(BaseModel):
     max_output_tokens: Optional[int] = Field(default=None, description="Maximum total output tokens")
     max_generations: Optional[int] = Field(default=None, description="Maximum optimization generations")
     early_stop_patience: int = Field(default=0, description="Stop if no improvement for this many consecutive generations")
+    finalize_reserve_fraction: float = Field(
+        default=0.08,
+        description=(
+            "Fraction of time_seconds reserved exclusively for _finalize() "
+            "(e.g. holdout re-ranking). The main search loop stops early "
+            "once remaining time drops to this reserve, so finalize is not "
+            "starved by BudgetExceeded. No effect if time_seconds is None."
+        ),
+    )
+    finalize_reserve_min_seconds: float = Field(
+        default=180.0,
+        description="Floor on the finalize time reserve, in seconds, regardless of finalize_reserve_fraction.",
+    )
 
 
 class OptimizerConfig(BaseModel):
