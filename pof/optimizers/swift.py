@@ -30,12 +30,13 @@ from typing import Any, Dict, List, Optional
 from pof.core.types import GenerationConfig, PromptRecord
 from pof.optimizers import register_optimizer
 from pof.optimizers.base import format_exemplar, BaseOptimizer, _GENERATE_SYSTEM_PROMPT, _IMPROVE_SYSTEM_PROMPT
+from pof.optimizers.holdout import HoldoutSelectionMixin
 
 logger = logging.getLogger(__name__)
 
 
 @register_optimizer("swift")
-class SWIFTOptimizer(BaseOptimizer):
+class SWIFTOptimizer(HoldoutSelectionMixin, BaseOptimizer):
     """SWIFT optimizer — failure-guided improvement with racing.
 
     Proposed method: needs validation.
@@ -43,7 +44,15 @@ class SWIFTOptimizer(BaseOptimizer):
 
     name = "swift"
 
-    def __init__(self, llm, dataset, evaluator, population_size: int = 8, **kwargs):
+    def __init__(
+        self,
+        llm,
+        dataset,
+        evaluator,
+        population_size: int = 8,
+        use_holdout_selection: bool = True,
+        **kwargs,
+    ):
         super().__init__(
             llm=llm,
             dataset=dataset,
@@ -53,6 +62,11 @@ class SWIFTOptimizer(BaseOptimizer):
             **kwargs,
         )
         self._phase_idx = 0
+        # Held-out final-selection (on by default, ported from APEX — see
+        # pof/optimizers/holdout.py for the mechanism and rationale). SWIFT
+        # previously had no correction for dev-pool argmax's winner's-curse
+        # bias at all.
+        self._init_holdout(use_holdout_selection=use_holdout_selection)
 
     def _init_population(self) -> List[PromptRecord]:
         """Phase 0: Diverse seed generation.
