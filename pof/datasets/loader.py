@@ -538,18 +538,32 @@ def _load_json(path: str, num_samples: int, seed: int) -> TaskDataset:
         raise DatasetError(f"Invalid JSON in {path}: {e}") from e
 
     if isinstance(data, list):
-        # Flat list — split it
-        rng = random.Random(seed)
-        rng.shuffle(data)
+        # Flat list — split it.
+        #
+        # Bug fix: this used to shuffle the WHOLE pool with the run seed
+        # before slicing train/dev/test, so unlike every built-in dataset
+        # (BBH/GSM8K/SVAMP/HumanEval, which all carve `test` with the fixed
+        # TEST_SPLIT_SEED so it's identical across a seed sweep), a custom
+        # JSON dataset's test set silently changed every run seed. That
+        # breaks the cross-seed comparability the fixed-seed test split
+        # exists for -- a seed sweep on a custom dataset was comparing
+        # results across genuinely different test sets without any signal
+        # that this was happening. Now: carve `test` off first with the
+        # fixed seed (same mechanism as the built-in loaders), then shuffle
+        # only the remainder with the run seed for train/dev.
+        data = list(data)
+        random.Random(TEST_SPLIT_SEED).shuffle(data)
         data = data[:num_samples]
 
         n_train = max(3, len(data) // 5)
         n_remaining = len(data) - n_train
-        n_dev = n_remaining // 2
+        n_test = n_remaining // 2
 
-        train = data[:n_train]
-        dev = data[n_train: n_train + n_dev]
-        test = data[n_train + n_dev:]
+        test = data[:n_test]
+        _rest = data[n_test:]
+        random.Random(seed).shuffle(_rest)
+        train = _rest[:n_train]
+        dev = _rest[n_train:]
     elif isinstance(data, dict):
         train = data.get("train", [])[:num_samples // 5]
         dev = data.get("dev", data.get("validation", []))[:num_samples // 2]

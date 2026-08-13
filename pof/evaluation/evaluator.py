@@ -219,6 +219,9 @@ class Evaluator:
         confidence: float = 0.05,
         min_samples: int = 10,
         max_samples: Optional[int] = None,
+        system_prompt_override: Optional[str] = None,
+        max_new_tokens_override: Optional[int] = None,
+        shuffle: bool = True,
     ) -> EvalResult:
         """Evaluate with Hoeffding racing — early stop if clearly worse than baseline.
 
@@ -232,20 +235,44 @@ class Evaluator:
             confidence: Significance level (alpha).
             min_samples: Minimum samples before racing kicks in.
             max_samples: Maximum samples to evaluate.
+            system_prompt_override: Use this system prompt instead of the
+                instance default for this call only (parity with
+                `evaluate()`/`evaluate_with_batch_racing()` — previously
+                missing here, so any caller searching across AO/CoT/thinking
+                modes silently fell back to the instance default whenever it
+                used this method instead of the other two).
+            max_new_tokens_override: Use this token budget instead of the
+                instance default for this call only. Previously missing
+                here too: a CoT/thinking/math-mode Evaluator constructed
+                with the AO-mode default of 32 tokens would silently
+                truncate every generation mid-reasoning when evaluated via
+                this method, with no way to override per call.
+            shuffle: Whether to shuffle `samples` before racing. The
+                Hoeffding bound assumes i.i.d. sampling order; if `samples`
+                arrives pre-sorted or grouped (e.g. by sub-task/difficulty),
+                the running score used for early elimination is computed
+                over a non-representative prefix. Defaults to True, matching
+                `evaluate()`'s own default.
 
         Returns:
             EvalResult (may be partial if racing terminated early).
         """
         max_samples = max_samples or len(samples)
-        samples_to_use = samples[:max_samples]
+        samples_to_use = list(samples)
+        if shuffle:
+            random.shuffle(samples_to_use)
+        samples_to_use = samples_to_use[:max_samples]
+
+        system_prompt = system_prompt_override if system_prompt_override is not None else self.system_prompt
+        max_new_tokens = max_new_tokens_override if max_new_tokens_override is not None else self.max_new_tokens
 
         logger.debug(
             f"[Racing] baseline={baseline_score:.3f} | up to {len(samples_to_use)} samples"
-            f" | max_tokens={self.max_new_tokens}"
+            f" | max_tokens={max_new_tokens}"
         )
 
         config = GenerationConfig(
-            max_new_tokens=self.max_new_tokens,
+            max_new_tokens=max_new_tokens,
             temperature=self.temperature,
             do_sample=self.temperature > 0,
         )
@@ -257,7 +284,7 @@ class Evaluator:
         for i, sample in enumerate(samples_to_use):
             eval_prompt = self._format_eval_prompt(prompt, sample["input"])
             pred = self.llm.generate(
-                eval_prompt, config, system_prompt=self.system_prompt
+                eval_prompt, config, system_prompt=system_prompt
             )
 
             target = sample["target"]
@@ -323,6 +350,13 @@ class Evaluator:
             min_batches: batches to run before the bound check kicks in, so a
                 single unlucky first batch cannot eliminate a candidate.
         """
+        # Bug fix: the between-batch bound assumes i.i.d. batch order, same
+        # as evaluate_with_racing's per-sample bound. `samples` previously
+        # went through unshuffled, so if the caller passed a pre-sorted or
+        # grouped list, the running score at the first bound check could be
+        # computed over a non-representative prefix.
+        samples = list(samples)
+        random.shuffle(samples)
         system_prompt = system_prompt_override if system_prompt_override is not None else self.system_prompt
         max_new_tokens = max_new_tokens_override if max_new_tokens_override is not None else self.max_new_tokens
         config = GenerationConfig(

@@ -214,6 +214,7 @@ class HuggingFaceLLM(BaseLLM):
         system role (e.g. Gemma-2 raises "System role not supported") get the
         system prompt folded into the first user message instead.
         """
+        last_error: Optional[Exception] = None
         for msgs in (messages, self._fold_system_into_user(messages)):
             try:
                 return self._tokenizer.apply_chat_template(
@@ -230,11 +231,24 @@ class HuggingFaceLLM(BaseLLM):
                         tokenize=False,
                         add_generation_prompt=True,
                     )
-                except Exception:
+                except Exception as e:
+                    last_error = e
                     continue
-            except Exception:
+            except Exception as e:
+                last_error = e
                 continue
-        # Plain-text fallback (no usable chat template at all)
+        # Plain-text fallback (no usable chat template at all). Previously
+        # silent: any templating exception -- not just the documented
+        # "system role unsupported" case -- fell through here with zero log
+        # signal, so a transient/unrelated bug could silently degrade an
+        # entire eval run to this crude non-native format. Now logged once
+        # per call so a degraded run is visible instead of looking like "the
+        # prompt is just bad."
+        logger.warning(
+            f"Chat template application failed for both message variants "
+            f"(last error: {last_error!r}); falling back to plain-text "
+            f"<|role|> format. Model was likely not trained on this format."
+        )
         parts = []
         for msg in messages:
             parts.append(f"<|{msg['role']}|>\n{msg['content']}")

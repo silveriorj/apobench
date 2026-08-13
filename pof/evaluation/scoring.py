@@ -353,11 +353,33 @@ def _extract_choice(text: str) -> Optional[str]:
         return text.upper()
 
     # Patterns (broadened to A-Z): "(A)", "A)", "A.", "answer: A", "The answer is B"
+    #
+    # Bug fix: the start-of-text pattern used to be
+    # r"^\s*\(?([A-Za-z])\)?\s*[.\s]", which matches a bare letter followed
+    # by ANY whitespace -- including the English article "A" at the start of
+    # ordinary prose ("A cat sat..."). That silently misscored any free-text
+    # answer beginning with "A" as choice A regardless of content, a
+    # systematic bias toward option A. Now requires the letter be followed
+    # by an actual delimiter (closing paren, period, or colon), not just
+    # whitespace, so plain prose starting with "A " no longer matches.
+    # Second bug fix (found via smoke-testing the fix above): the trailing
+    # pattern `([A-Za-z])\s*$` had no word-boundary requirement before the
+    # letter, so it matched the LAST CHARACTER of any word ending in a
+    # single letter -- "The correct answer is in the mat" extracted "T" (the
+    # trailing letter of "mat"), not just genuine standalone-letter answers
+    # like "... option F". Added `\b` so the letter must be its own token
+    # (preceded by whitespace/start, not by another word character).
+    # Third bug fix (same underlying class as the second): the "answer
+    # is/: X" pattern captured only a single character with no check that it
+    # wasn't the first letter of a longer word -- "the answer is in the mat"
+    # matched "i" (from "in"). Added a negative lookahead so the captured
+    # letter can't be immediately followed by another letter.
     patterns = [
-        r"(?:answer|choice)\s*(?:is|:)\s*\(?([A-Za-z])\)?",
-        r"^\s*\(?([A-Za-z])\)?\s*[.\s]",
+        r"(?:answer|choice)\s*(?:is|:)\s*\(?([A-Za-z])\)?(?![A-Za-z])",
+        r"^\s*\(([A-Za-z])\)",
+        r"^\s*([A-Za-z])[.):]",
         r"\(([A-Za-z])\)",
-        r"([A-Za-z])\s*$",
+        r"\b([A-Za-z])\s*$",
     ]
 
     for pattern in patterns:

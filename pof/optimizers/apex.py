@@ -27,11 +27,20 @@ import math
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
-from pof.core.types import PromptRecord
+from pof.core.types import OptimizationResult, PromptRecord
 from pof.optimizers import register_optimizer
 from pof.optimizers.base import format_exemplar, BaseOptimizer, _GENERATE_SYSTEM_PROMPT, _IMPROVE_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
+
+# Held-out final-selection defaults. See APEXOptimizer's docstring and the
+# `use_holdout_selection` constructor flag below for the mechanism and why
+# it's on by default: dev-pool argmax over many candidates is biased upward
+# regardless of dev sample size (measured directly: FUNNELv2Optimizer's
+# dev 0.927 +/- 0.025 vs test 0.838 +/- 0.062, corr -0.46; plain APEX lost
+# to the zero-search baseline_seed on 18/27 BBH tasks in this project).
+MIN_HOLDOUT_N = 12
+FINALIZE_TOP_K = 6
 
 
 @register_optimizer("apex")
@@ -53,6 +62,7 @@ class APEXOptimizer(BaseOptimizer):
         expert_personas: Optional[List[str]] = None,
         candidates_per_operator: int = 2,
         ucb_c: float = 0.5,
+        use_holdout_selection: bool = True,
         **kwargs,
     ):
         super().__init__(
@@ -77,6 +87,30 @@ class APEXOptimizer(BaseOptimizer):
         # because _step's reward computation for gate-rejected candidates
         # depends on this exact value -- see _step's docstring).
         self.gate_slack = 0.10
+
+        # Held-out final-selection (on by default -- see module-level
+        # constants' docstring). Reserves ~30% of dev (floor MIN_HOLDOUT_N)
+        # that the search never touches; used exactly once at _finalize() to
+        # re-rank the top FINALIZE_TOP_K finalists and report the holdout
+        # winner instead of the (upward-biased) dev-pool argmax.
+        self.use_holdout_selection = use_holdout_selection
+        self._opt_pool: Optional[List[Dict[str, str]]] = None
+        self._holdout: Optional[List[Dict[str, str]]] = None
+        self._holdout_winner: Optional[PromptRecord] = None
+        if self.use_holdout_selection:
+            full_dev = dataset.get_eval_samples("dev", n=None)
+            pool = list(full_dev)
+            random.Random(42).shuffle(pool)
+            n_dev = len(pool)
+            n_opt = max(1, n_dev - max(MIN_HOLDOUT_N, round(0.30 * n_dev)))
+            n_opt = min(n_opt, n_dev)
+            self._opt_pool = pool[:n_opt]
+            self._holdout = pool[n_opt:]
+            logger.info(
+                f"[{self.name}] holdout selection enabled: dev={n_dev} -> "
+                f"optimization pool={len(self._opt_pool)}, "
+                f"held-out selection slice={len(self._holdout)}"
+            )
 
     def _init_population(self) -> List[PromptRecord]:
         """Initialize with expert-persona-generated candidates."""
@@ -104,6 +138,79 @@ class APEXOptimizer(BaseOptimizer):
 
         self._evaluate_population(candidates)
         return self._select_top_k(candidates)
+
+    def _sample_dev(self, n: Optional[int], seed: int = 42) -> List[Dict[str, str]]:
+        """Sample only from the search-visible pool when holdout selection
+        is enabled -- never the holdout slice. See __init__'s docstring."""
+        if not self.use_holdout_selection or self._opt_pool is None:
+            return super()._sample_dev(n, seed=seed)
+        pool = self._opt_pool
+        if n is None or n >= len(pool):
+            return list(pool)
+        return random.Random(seed).sample(pool, n)
+
+    def _finalize(self) -> None:
+        """Re-rank the top contenders on the never-searched holdout slice."""
+        if self._finalized:
+            return
+        if self.use_holdout_selection:
+            self._select_on_holdout()
+        self._finalized = True
+
+    def _select_on_holdout(self) -> None:
+        if not self._holdout:
+            return
+        # Bug fix: this used to sort ALL history records by `.score` and
+        # take the top FINALIZE_TOP_K -- but a gate-rejected candidate's
+        # `.score` is its 16-sample minibatch score while a gate-passed
+        # candidate's `.score` is its 50-sample full-dev score. Those are on
+        # incomparable variance scales; ranking them together let a lucky
+        # minibatch-only score outrank a true full-dev score and take a
+        # finalist slot purely from sample-size-driven noise. Now restricted
+        # to records that actually received a full dev evaluation.
+        dev_scored = [
+            r for r in self.tracker.history.records.values()
+            if r.text and "dev" in r.scores
+        ]
+        contenders = sorted(
+            dev_scored, key=lambda r: r.scores["dev"], reverse=True
+        )[:FINALIZE_TOP_K]
+        if not contenders:
+            return
+
+        for record in contenders:
+            res = self.evaluator.evaluate(record.text, self._holdout)
+            record.scores["holdout"] = res.score
+            record.scores["holdout_n"] = float(len(self._holdout))
+
+        winner = max(contenders, key=lambda r: r.scores.get("holdout", 0.0))
+        self._holdout_winner = winner
+        opt_best = contenders[0]
+        note = (
+            f"holdout selection over {len(contenders)} finalists on "
+            f"{len(self._holdout)} held-out instances: winner holdout="
+            f"{winner.scores.get('holdout', 0.0):.3f} (opt-pool={winner.scores.get('dev', 0.0):.3f}); "
+            f"opt-pool argmax would have picked holdout="
+            f"{opt_best.scores.get('holdout', 0.0):.3f} (opt-pool={opt_best.scores.get('dev', 0.0):.3f})"
+            + ("" if winner is opt_best else " -- DIFFERENT prompt chosen")
+        )
+        logger.info(f"[{self.name}] {note}")
+        self.tracker.add_note(note)
+
+    def optimize(self) -> OptimizationResult:
+        """Run the search, then report the held-out winner if one was chosen."""
+        result = super().optimize()
+        winner = self._holdout_winner
+        if winner is not None and winner.text:
+            result.best_prompt = winner.text
+            # Bug fix: this used to report `winner.scores.get("dev", ...)`
+            # -- the opt-pool dev score -- as `best_score`, even though the
+            # holdout score is what actually decided the winner. Anyone
+            # reading `best_score` as "the number that justified this
+            # choice" was seeing the still-upward-biased opt-pool figure,
+            # not the criterion actually used. Report the holdout score.
+            result.best_score = winner.scores.get("holdout", winner.score)
+        return result
 
     def _step(self) -> List[PromptRecord]:
         """Adaptive step: UCB1-select operators and apply them.
@@ -223,6 +330,11 @@ class APEXOptimizer(BaseOptimizer):
         selected.sort(key=lambda r: r.score, reverse=True)
         return selected
 
+    # Minimum pulls an operator must accumulate before it can be excluded
+    # from a generation's selected set on UCB rank alone -- see
+    # _select_operators's docstring for the bug this guards against.
+    MIN_OPERATOR_PULLS = 2
+
     def _select_operators(self) -> List[tuple]:
         """UCB1 bandit over operators (cf. ProTeGi's bandit selection).
 
@@ -231,6 +343,19 @@ class APEXOptimizer(BaseOptimizer):
         than absolute scores -- see _step's docstring for why. Unpulled
         operators have infinite value, so every operator is tried before any
         is repeated — no premature greedy lock-in.
+
+        Bug fix: this used to hard-cut to the top 4 of 7 operators by UCB
+        score every generation (`scored[:4]`). Standard UCB1's regret bound
+        relies on every arm eventually being pulled again to correct a bad
+        early estimate; permanently excluding the bottom 3 the moment they
+        rank low breaks that guarantee outright -- an operator that got one
+        unlucky early pull could never be sampled again to correct it, no
+        matter how good it might actually be. The fix: any operator with
+        fewer than `MIN_OPERATOR_PULLS` recorded pulls is force-included
+        regardless of its current UCB rank (this also naturally covers the
+        cold-start case, since unpulled operators already show up first via
+        their infinite UCB value); once every operator clears that floor,
+        selection reduces to the original top-4-by-UCB exploitation.
         """
         all_operators = [
             ("expert_refine", self._op_expert_refine),
@@ -256,10 +381,15 @@ class APEXOptimizer(BaseOptimizer):
                 ucb = mean + self.ucb_c * math.sqrt(
                     math.log(max(total_pulls, 2)) / len(pulls)
                 )
-            scored.append((ucb, name, fn))
+            scored.append((ucb, name, fn, len(pulls)))
 
         scored.sort(key=lambda t: t[0], reverse=True)
-        return [(name, fn) for _, name, fn in scored[:4]]
+
+        forced = [(name, fn) for _, name, fn, n in scored if n < self.MIN_OPERATOR_PULLS]
+        ranked = [(name, fn) for _, name, fn, n in scored if n >= self.MIN_OPERATOR_PULLS]
+        forced_names = {name for name, _ in forced}
+        top_up = [t for t in ranked if t[0] not in forced_names][: max(0, 4 - len(forced))]
+        return forced + top_up
 
     def _tournament_select(
         self, candidates: List[PromptRecord], tournament_size: int = 3
