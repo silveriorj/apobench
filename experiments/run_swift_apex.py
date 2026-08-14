@@ -237,6 +237,8 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     "gsm8k": 512,  # kept for reference/opt-in; not in the default DATASETS matrix
     "humaneval": 768,  # empirically: truncated completions are never correct (0/28 at 1024 cap);
                        # 768 loses only 5/1725 correct Qwen3-4B answers vs 1024, 0 for Llama/Gemma
+    "livebench_coding": 1024,  # LiveCodeBench problems (competitive programming) run longer/
+                                # more complex than HumanEval on average -- no empirical tuning yet.
 }
 
 # Default fallback when task is not listed above
@@ -325,6 +327,10 @@ DATASETS = {
     },
     "humaneval": {
         "tasks": [""],  # Single task
+        "task_type": "text",
+    },
+    "livebench_coding": {
+        "tasks": [""],  # Single task (LiveCodeBench-sourced problems)
         "task_type": "text",
     },
 }
