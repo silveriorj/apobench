@@ -116,6 +116,12 @@ def _score_code(prediction: str, target: str) -> int:
     The target is a JSON blob with 'prompt' (signature + docstring), 'test'
     (the check function), and 'entry_point'. The candidate program is
     assembled and run in a subprocess with a timeout; score 1 iff it exits 0.
+
+    A second target shape (LiveCodeBench-style, 'test_cases' key present
+    instead of 'test'/'entry_point') is dispatched to _score_livecodebench
+    -- kept as one task_type ("code") rather than a second one so no other
+    layer (runner.py, evaluator.py's SYSTEM_PROMPT_BY_TASK_TYPE) needs to
+    know about the new dataset.
     """
     import json as _json
     import subprocess
@@ -123,10 +129,17 @@ def _score_code(prediction: str, target: str) -> int:
 
     try:
         meta = _json.loads(target)
+    except (ValueError, TypeError):
+        return _score_text(prediction, target)
+
+    if "test_cases" in meta:
+        return _score_livecodebench(prediction, meta)
+
+    try:
         test_code = meta["test"]
         entry_point = meta["entry_point"]
         problem_prompt = meta.get("prompt", "")
-    except (ValueError, KeyError, TypeError):
+    except (KeyError, TypeError):
         # Not a HumanEval-style target — plain text comparison
         return _score_text(prediction, target)
 
@@ -156,6 +169,106 @@ def _score_code(prediction: str, target: str) -> int:
         return 1 if proc.returncode == 0 else 0
     except (subprocess.TimeoutExpired, OSError):
         return 0
+
+
+def _score_livecodebench(prediction: str, meta: dict) -> int:
+    """Score LiveCodeBench-style problems: run ALL test cases, pass@1 needs
+    every one to pass (matches LiveCodeBench's own all-or-nothing scoring).
+
+    `meta['test_cases']` is a list of {'input', 'output', 'testtype'} dicts.
+    'functional' tests call `meta['func_name']` on the (LeetCode-style)
+    `Solution` class built from `meta['starter_code']` + the completion,
+    passing ast.literal_eval'd args and comparing literal-evaluated return
+    values. Any other/missing testtype is treated as stdin/stdout: the
+    program is run as a script with `input` piped to stdin, stdout compared
+    to `output` as text. Each case runs as its own subprocess (isolation +
+    per-case timeout, same rationale as the HumanEval path above).
+    """
+    import ast as _ast
+    import json as _json
+    import subprocess
+    import sys as _sys
+
+    test_cases = meta.get("test_cases") or []
+    if not test_cases:
+        return 0
+
+    completion = _extract_code(prediction)
+    if not completion.strip():
+        return 0
+
+    starter_code = meta.get("starter_code") or ""
+    func_name = meta.get("func_name") or ""
+    header = (
+        "import sys, math, itertools, collections, functools, heapq, bisect, re\n"
+        "from typing import List, Dict, Tuple, Optional, Set, Any\n"
+        "from collections import defaultdict, Counter, deque\n"
+    )
+
+    is_functional = bool(starter_code.strip()) and bool(func_name)
+
+    if is_functional:
+        if "class Solution" in completion:
+            program_body = completion
+        else:
+            body = completion if completion.startswith((" ", "\t")) else _indent(completion)
+            program_body = starter_code.rstrip("\n") + "\n" + body
+        program = header + program_body
+
+        total = passed = 0
+        for case in test_cases:
+            if case.get("testtype", "functional") != "functional":
+                continue
+            total += 1
+            try:
+                args = _ast.literal_eval(case["input"])
+            except (ValueError, SyntaxError):
+                continue
+            if not isinstance(args, tuple):
+                args = (args,)
+            try:
+                expected = _ast.literal_eval(case["output"])
+            except (ValueError, SyntaxError):
+                expected = case["output"]
+
+            call = (
+                "\nimport json as _json\n"
+                "_sol = Solution()\n"
+                f"_res = _sol.{func_name}(*{args!r})\n"
+                "print(_json.dumps(_res))\n"
+            )
+            try:
+                proc = subprocess.run(
+                    [_sys.executable, "-c", program + call],
+                    capture_output=True, timeout=10, text=True,
+                )
+                if proc.returncode != 0 or not proc.stdout.strip():
+                    continue
+                got = _json.loads(proc.stdout.strip().splitlines()[-1])
+                if got == expected:
+                    passed += 1
+            except (subprocess.TimeoutExpired, OSError, ValueError):
+                continue
+        return 1 if total > 0 and passed == total else 0
+
+    # stdin/stdout style: no starter_code/func_name — completion is a script.
+    program = header + completion
+    total = passed = 0
+    for case in test_cases:
+        if case.get("testtype") not in (None, "stdin", "stdio"):
+            continue
+        total += 1
+        try:
+            proc = subprocess.run(
+                [_sys.executable, "-c", program],
+                input=str(case.get("input", "")),
+                capture_output=True, timeout=10, text=True,
+            )
+            if proc.stdout.strip() == str(case.get("output", "")).strip():
+                passed += 1
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+    return 1 if total > 0 and passed == total else 0
 
 
 def _extract_code(text: str) -> str:

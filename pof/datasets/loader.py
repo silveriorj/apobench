@@ -170,6 +170,8 @@ def load_dataset_by_name(
         return _load_svamp(num_samples, seed)
     elif name.lower() == "humaneval":
         return _load_humaneval(num_samples, seed)
+    elif name.lower() in ("livebench_coding", "livebench/coding", "livecodebench"):
+        return _load_livebench_coding(num_samples, seed)
     elif name.endswith(".json") or Path(name).exists():
         return _load_json(name, num_samples, seed)
     else:
@@ -517,6 +519,133 @@ def _load_humaneval(num_samples: int, seed: int) -> TaskDataset:
         test_samples=test,
         task_type="code",
         metadata={"source": "openai/openai_humaneval"},
+    )
+
+
+def _decode_lcb_private_tests(raw: str) -> list:
+    """Decode LiveCodeBench's private_test_cases field.
+
+    Usually plain JSON; when the payload is large LiveCodeBench instead
+    ships it as base64(zlib(pickle(json_string))) -- the format used by the
+    official LiveCodeBench loading code. Falls back to an empty list on any
+    decode failure rather than raising, since public_test_cases alone still
+    gives a (weaker) usable signal.
+    """
+    import json as _json
+
+    try:
+        return _json.loads(raw)
+    except (ValueError, TypeError):
+        pass
+
+    import base64 as _b64
+    import pickle
+    import zlib
+
+    try:
+        return _json.loads(
+            pickle.loads(zlib.decompress(_b64.b64decode(raw.encode("utf-8"))))
+        )
+    except Exception:
+        logger.warning("livebench/coding: failed to decode private_test_cases, using public only")
+        return []
+
+
+def _load_livebench_coding(num_samples: int, seed: int) -> TaskDataset:
+    """Load LiveBench's coding category (HF: livebench/coding) —
+    LiveCodeBench-sourced problems, functional (LeetCode-style) or
+    stdin/stdout test cases. See _score_livecodebench (scoring.py) for how
+    a candidate completion is executed and judged.
+
+    Held to task_type="code" (same as HumanEval) so no other layer needs a
+    new task_type -- scoring.py's _score_code dispatches on target shape.
+    """
+    try:
+        from datasets import load_dataset as hf_load_dataset
+    except ImportError:
+        raise DatasetError("'datasets' package required. Run: pip install datasets")
+
+    try:
+        dataset = hf_load_dataset("livebench/coding", split="test")
+    except Exception as e:
+        raise DatasetError(f"Failed to load livebench/coding: {e}") from e
+
+    import ast as _ast
+    import json as _json
+
+    all_samples = []
+    for item in dataset:
+        turns = item.get("turns") or []
+        question = turns[0] if turns else item.get("question_title", "")
+        if not question:
+            continue
+
+        oj = item.get("original_json")
+        if isinstance(oj, str):
+            try:
+                oj = _ast.literal_eval(oj)
+            except (ValueError, SyntaxError):
+                oj = {}
+        oj = oj or {}
+        starter_code = oj.get("starter_code", "") or ""
+        metadata = oj.get("metadata")
+        if isinstance(metadata, str):
+            try:
+                metadata = _json.loads(metadata)
+            except ValueError:
+                metadata = {}
+        func_name = (metadata or {}).get("func_name", "")
+
+        try:
+            public = _json.loads(item.get("public_test_cases") or "[]")
+        except ValueError:
+            public = []
+        private = _decode_lcb_private_tests(item.get("private_test_cases") or "")
+        test_cases = list(public) + list(private)
+        if not test_cases:
+            continue
+
+        target = _json.dumps({
+            "test_cases": test_cases,
+            "starter_code": starter_code,
+            "func_name": func_name,
+        })
+        all_samples.append({"input": question, "target": target})
+
+    if not all_samples:
+        raise DatasetError("livebench/coding returned no usable samples")
+
+    # Test split is carved with a FIXED seed so the held-out set is identical
+    # across run seeds; only train/dev vary with the run seed (see module note).
+    rng = random.Random(TEST_SPLIT_SEED)
+    rng.shuffle(all_samples)
+
+    # Only ~128 problems total -- always hits the small-task branch.
+    if len(all_samples) >= 8 + 50 + 115:
+        n_train = 8
+        n_test = min(115, max(1, len(all_samples) - n_train - 50))
+    else:
+        n_train = 3
+        n_test = min(115, max(1, len(all_samples) - n_train - 33))
+
+    test = all_samples[:n_test]
+    _rest = all_samples[n_test:]
+    random.Random(seed).shuffle(_rest)   # run seed varies train/dev only
+    train = _rest[:n_train]
+    dev = _rest[n_train:]
+
+    logger.info(
+        f"livebench/coding loaded: {len(train)} train, {len(dev)} dev, "
+        f"{len(test)} test"
+    )
+
+    return TaskDataset(
+        name="livebench_coding",
+        train_samples=train,
+        dev_samples=dev,
+        test_samples=test,
+        task_type="code",
+        metadata={"source": "livebench/coding"},
     )
 
 
