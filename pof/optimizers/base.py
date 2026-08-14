@@ -18,7 +18,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
 from pof.audit.tracker import AuditTracker
-from pof.core.types import EvalResult, GenerationConfig, OptimizationResult, PromptRecord
+from pof.core.types import EvalResult, GenerationConfig, OptimizationResult, PromptRecord, rank_key
 from pof.datasets.loader import TaskDataset
 from pof.evaluation.evaluator import Evaluator
 from pof.llm.base import BaseLLM
@@ -396,16 +396,22 @@ class BaseOptimizer(ABC):
     def _select_top_k(
         self, candidates: List[PromptRecord], k: Optional[int] = None
     ) -> List[PromptRecord]:
-        """Select top-k candidates by score."""
+        """Select top-k candidates by score.
+
+        Uses rank_key (pof/core/types.py), not raw `.score` -- gate-rejected
+        candidates carry a noisy 16-sample minibatch score on `.score` while
+        gate-passed candidates carry a full-dev score; ranking on `.score`
+        alone let a minibatch fluke outrank a genuine best candidate.
+        """
         k = k or self.population_size
-        sorted_candidates = sorted(candidates, key=lambda r: r.score, reverse=True)
+        sorted_candidates = sorted(candidates, key=rank_key, reverse=True)
         return sorted_candidates[:k]
 
     def _update_best(self) -> None:
         """Update best_record from current population."""
         if self.population:
-            current_best = max(self.population, key=lambda r: r.score)
-            if self.best_record is None or current_best.score > self.best_record.score:
+            current_best = max(self.population, key=rank_key)
+            if self.best_record is None or rank_key(current_best) > rank_key(self.best_record):
                 self.best_record = current_best
 
     def _is_duplicate(self, text: str) -> bool:

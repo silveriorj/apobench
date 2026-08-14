@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from pof.core.types import PromptRecord
+from pof.core.types import PromptRecord, rank_key
 
 
 @dataclass
@@ -140,10 +140,16 @@ class OptimizationHistory:
         return lineage
 
     def get_best_record(self) -> Optional[PromptRecord]:
-        """Get the best-scoring record across all generations."""
+        """Get the best-scoring record across all generations.
+
+        Uses rank_key (pof/core/types.py) so a gate-rejected candidate's
+        noisy minibatch-only score can never outrank a genuinely
+        full-dev-scored record -- see rank_key's docstring for the bug this
+        prevents.
+        """
         if not self.records:
             return None
-        return max(self.records.values(), key=lambda r: r.score)
+        return max(self.records.values(), key=rank_key)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize history to dictionary (storage-efficient).

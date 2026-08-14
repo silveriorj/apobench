@@ -164,7 +164,11 @@ def _score_code(prediction: str, target: str) -> int:
         proc = subprocess.run(
             [_sys.executable, "-c", program],
             capture_output=True,
-            timeout=15,
+            # Matches inspect_evals' HumanEval VERIFY_TIMEOUT (30s), not an
+            # arbitrary choice -- this project's prior 15s cap risked false
+            # negatives on correct-but-slower canonical solutions for
+            # reasons unrelated to model/prompt quality.
+            timeout=30,
         )
         return 1 if proc.returncode == 0 else 0
     except (subprocess.TimeoutExpired, OSError):
@@ -487,8 +491,17 @@ def _extract_choice(text: str) -> Optional[str]:
     # wasn't the first letter of a longer word -- "the answer is in the mat"
     # matched "i" (from "in"). Added a negative lookahead so the captured
     # letter can't be immediately followed by another letter.
+    # Fourth bug fix (found via inspect_evals comparison audit, same
+    # underlying class again): the negative lookahead above only blocked a
+    # following LETTER, not a following WORD -- "the correct choice is a
+    # rare exception to the rule" matched "choice is a" and captured "a"
+    # (indefinite article), since the character right after "a" is a space,
+    # not a letter. Replaced with a positive lookahead requiring the
+    # captured letter be the end of its clause: followed only by closing
+    # punctuation, or by whitespace running straight to end-of-line/string
+    # (no further prose after it).
     patterns = [
-        r"(?:answer|choice)\s*(?:is|:)\s*\(?([A-Za-z])\)?(?![A-Za-z])",
+        r"(?:answer|choice)\s*(?:is|:)\s*\(?([A-Za-z])\)?(?=[.,;:!?)]|\s*(?:\n|$))",
         r"^\s*\(([A-Za-z])\)",
         r"^\s*([A-Za-z])[.):]",
         r"\(([A-Za-z])\)",

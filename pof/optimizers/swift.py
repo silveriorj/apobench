@@ -138,8 +138,28 @@ class SWIFTOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         elif self._phase_idx == 2:
             return self._phase_trajectory_crossover()
         elif self._phase_idx == 3:
-            result = self._phase_polish()
-            raise StopIteration
+            # Bug fix (2026-08-14 optimizer audit): this used to assign
+            # _phase_polish()'s return value to a local `result` and then
+            # immediately `raise StopIteration` -- base.py's optimize()
+            # loop does `new_population = self._step()` and only applies
+            # that return value in the try block, so raising StopIteration
+            # on the SAME call that produced it meant Phase 3's fully
+            # evaluated, real-LLM-cost candidates (the "Polish" phase --
+            # local edits + few-shot augmentation, full eval, described in
+            # the module docstring as the highest-fidelity phase) were
+            # generated and scored but never applied to self.population,
+            # never became best_record via _update_best(), and never got a
+            # generation-3 entry in tracker history via the normal path.
+            # They could only ever surface through HoldoutSelectionMixin's
+            # independent tracker.history scan -- meaning with holdout
+            # selection off, Phase 3 was pure wasted budget; its output
+            # could never win. Returning normally here lets base.py apply
+            # it like every other generation; the loop still terminates
+            # after generation 3 since num_iterations=3 bounds the range()
+            # in optimize() (the `else: raise StopIteration` branch below
+            # still catches any 4th+ call if max_generations ever
+            # overrides num_iterations upward).
+            return self._phase_polish()
         else:
             raise StopIteration
 

@@ -101,6 +101,26 @@ class PromptRecord:
         )
 
 
+def rank_key(record: "PromptRecord") -> tuple:
+    """Sort/max key that ranks any dev-scored record above any record that
+    only has a minibatch-gate score, then breaks ties by score.
+
+    Bug this fixes (found via the 2026-08-14 optimizer audit): gate-rejected
+    candidates keep `.score` set to a 16-sample minibatch score (high
+    variance) while gate-passed candidates get a 50-sample (or configured
+    `eval_sample_size`) full-dev score (`_evaluate_with_minibatch_gate`,
+    pof/optimizers/base.py) -- both were being sorted together on raw
+    `.score`, letting a noisy small-sample fluke outrank a true best
+    candidate and get promoted into the population/best_record/future-gen
+    parent pool. `"dev" in record.scores` is only ever set when a real
+    full-dev (or racing/full) evaluation happened -- never for a
+    gate-rejected minibatch-only record -- so gating on it first restores a
+    correct, single-scale ranking. Ties within the same tier still break on
+    `.score` as before.
+    """
+    return ("dev" in record.scores, record.score)
+
+
 @dataclass
 class EvalResult:
     """Result of evaluating a prompt on a set of samples."""

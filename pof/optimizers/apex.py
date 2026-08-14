@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import math
 import random
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from pof.core.types import OptimizationResult, PromptRecord
@@ -33,6 +34,33 @@ from pof.optimizers.base import format_exemplar, BaseOptimizer, _GENERATE_SYSTEM
 from pof.optimizers.holdout import HoldoutSelectionMixin
 
 logger = logging.getLogger(__name__)
+
+# Markers _op_few_shot/_op_format_constraint each append to a record's text,
+# and strip before re-appending so demonstrations/constraints replace rather
+# than accumulate on a record re-selected as an elite across generations.
+_FEW_SHOT_MARKER = "\n\nExamples:\n"
+_FORMAT_CONSTRAINT_MARKER = "\n\nAnswer with ONLY the final answer"
+
+
+def _strip_appended_block(text: str, marker: str) -> str:
+    """Remove a previously-appended `marker`-prefixed block from `text`.
+
+    Bug fix (2026-08-14 optimizer audit): the original idempotency strip
+    used `text.split(marker, 1)[0]`, which keeps everything BEFORE the
+    first occurrence of `marker` -- discarding not just this operator's own
+    block but also anything appended AFTER it, e.g. if `_op_few_shot` ran,
+    then `_op_format_constraint` ran (appending its block after the
+    examples), then `_op_few_shot` ran again on the same elite: the second
+    few-shot strip would drop the format-constraint block too, silently
+    regressing the record and misattributing the loss to few-shot's reward.
+    Stops at the next KNOWN marker (or end-of-string) instead of
+    end-of-string only, so a differently-ordered block from the other
+    operator survives.
+    """
+    other_markers = [m for m in (_FEW_SHOT_MARKER, _FORMAT_CONSTRAINT_MARKER) if m != marker]
+    boundary = "|".join(re.escape(m) for m in other_markers)
+    pattern = re.escape(marker) + r".*?(?=" + boundary + r"|$)"
+    return re.sub(pattern, "", text, count=1, flags=re.DOTALL)
 
 
 @register_optimizer("apex")
@@ -422,8 +450,11 @@ class APEXOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         # record re-selected as an elite across generations. (Previously
         # this did not strip, which is a plausible cause of APEX's
         # anomalously high token cost relative to every compared method.)
-        base_text = record.text.split("\n\nExamples:\n", 1)[0]
-        return [(f"{base_text}\n\nExamples:\n{examples}", [record.id])]
+        # Uses _strip_appended_block (not a plain split) so a
+        # format_constraint block appended after this one survives -- see
+        # that helper's docstring for the bug this avoids.
+        base_text = _strip_appended_block(record.text, _FEW_SHOT_MARKER)
+        return [(f"{base_text}{_FEW_SHOT_MARKER}{examples}", [record.id])]
 
     def _op_format_constraint(self) -> List[Tuple[str, List[str]]]:
         """Append an explicit output-format rule derived from the targets.
@@ -449,8 +480,10 @@ class APEXOptimizer(HoldoutSelectionMixin, BaseOptimizer):
             f"\n\nAnswer with ONLY the final answer, exactly in the same format "
             f"as these examples: {sample_answers}. No explanation."
         )
-        # Idempotent for the same reason as _op_few_shot above.
-        base_text = record.text.split("\n\nAnswer with ONLY the final answer", 1)[0]
+        # Idempotent for the same reason as _op_few_shot above -- uses
+        # _strip_appended_block so a few-shot block appended after this one
+        # survives.
+        base_text = _strip_appended_block(record.text, _FORMAT_CONSTRAINT_MARKER)
         return [(base_text.rstrip() + constraint, [record.id])]
 
     def _expert_generate(
