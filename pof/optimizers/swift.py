@@ -176,11 +176,24 @@ class SWIFTOptimizer(HoldoutSelectionMixin, BaseOptimizer):
             # if the record was somehow created without them (edge case).
             details = record.per_sample_details
             if not details and record.text:
-                samples = self.dataset.get_eval_samples("dev", n=self.eval_sample_size)
+                # Bug fix (2026-08-14 optimizer audit): this used to call
+                # self.dataset.get_eval_samples("dev", ...) directly, which
+                # draws from the FULL dev split -- holdout slice included --
+                # bypassing _sample_dev's restriction to the search-visible
+                # opt_pool (HoldoutSelectionMixin). That leaked held-out
+                # instances into the search itself, weakening the winner's-
+                # curse correction _select_on_holdout is supposed to
+                # provide for this exact record later. Also now sets
+                # record.scores["dev"] (previously only .score was set),
+                # matching every other real full-dev eval path in the
+                # codebase -- without it, this record would be misranked as
+                # "no dev score" by rank_key() despite having a genuine one.
+                samples = self._sample_dev(self.eval_sample_size)
                 result = self.evaluator.evaluate(record.text, samples)
                 details = result.per_sample_details
                 record.per_sample_details = details
                 record.score = result.score
+                record.scores["dev"] = result.score
                 record.performance_vector = result.performance_vector
 
             failures = [d for d in details if not d["correct"]]

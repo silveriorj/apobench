@@ -28,7 +28,7 @@ import random
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from pof.core.types import OptimizationResult, PromptRecord
+from pof.core.types import OptimizationResult, PromptRecord, rank_key
 from pof.optimizers import register_optimizer
 from pof.optimizers.base import format_exemplar, BaseOptimizer, _GENERATE_SYSTEM_PROMPT, _IMPROVE_SYSTEM_PROMPT
 from pof.optimizers.holdout import HoldoutSelectionMixin
@@ -255,19 +255,49 @@ class APEXOptimizer(HoldoutSelectionMixin, BaseOptimizer):
                     reward = 0.0
                 self._operator_scores.setdefault(op_name, []).append(reward)
 
-        # Tournament selection with elitism, then re-sort by score: several
-        # operators index self.population[:k] as "the current elites", which
-        # only holds if the population is rank-ordered. Tournament selection
+        # Tournament selection with elitism, then re-sort: several operators
+        # index self.population[:k] as "the current elites", which only
+        # holds if the population is rank-ordered. Tournament selection
         # previously returned the elite followed by winners in draw order,
         # not score order, so that assumption broke from generation 2 on.
+        #
+        # Bug fix (2026-08-14 optimizer audit): this sort, and
+        # _tournament_select's own sort/winner comparisons, used raw
+        # `.score` -- reintroducing the exact score-scale-mixing bug
+        # rank_key() (pof/core/types.py) was built to fix, in the ONE place
+        # that most determines whether generations actually improve. A
+        # gate-rejected candidate's noisy 16-sample minibatch score
+        # (base.py's minibatch gate) could outrank a genuine 50-sample
+        # dev-scored candidate, win its tournament bout, become the
+        # unconditionally-preserved elite (population[0]) and thus the sole
+        # parent for _op_semantic_variation, land in population[:3]/[:4]
+        # (the parent pool for most other operators), and pollute
+        # elite_baseline (the shared reward reference every bandit arm is
+        # scored against that generation) -- all while never having
+        # received a real full-dev evaluation. rank_key() was already
+        # applied to _init_population's selection (base.py) and best_record
+        # reporting, but not to this per-generation path, which is what
+        # actually drives search from generation 1 onward.
         selected = self._tournament_select(candidates)
-        selected.sort(key=lambda r: r.score, reverse=True)
+        selected.sort(key=rank_key, reverse=True)
         return selected
 
     # Minimum pulls an operator must accumulate before it can be excluded
     # from a generation's selected set on UCB rank alone -- see
     # _select_operators's docstring for the bug this guards against.
-    MIN_OPERATOR_PULLS = 2
+    #
+    # Bug fix (2026-08-14 optimizer audit): was 2, equal to
+    # candidates_per_operator's own default of 2 -- since generation 1
+    # force-includes every operator (total_pulls == 0 branch) and pulls
+    # each candidates_per_operator times, every operator already sits AT
+    # this floor by the end of generation 1. From generation 2 onward the
+    # UCB1 guarantee this constant exists to protect was already vacuous:
+    # selection dropped straight to top-4-by-UCB exploitation off a mean of
+    # just 2 (single-LLM-sample-scale) reward draws per arm, so one bad
+    # early pull could still exclude an operator for the rest of the run.
+    # Doubled to require 2 full generations' worth of pulls before an
+    # operator can be dropped on rank alone.
+    MIN_OPERATOR_PULLS = 4
 
     def _select_operators(self) -> List[tuple]:
         """UCB1 bandit over operators (cf. ProTeGi's bandit selection).
@@ -329,7 +359,7 @@ class APEXOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         self, candidates: List[PromptRecord], tournament_size: int = 3
     ) -> List[PromptRecord]:
         """Tournament selection with elitism."""
-        sorted_candidates = sorted(candidates, key=lambda r: r.score, reverse=True)
+        sorted_candidates = sorted(candidates, key=rank_key, reverse=True)
         selected = [sorted_candidates[0]]
 
         remaining = sorted_candidates[1:]
@@ -337,7 +367,7 @@ class APEXOptimizer(HoldoutSelectionMixin, BaseOptimizer):
             tournament = random.sample(
                 remaining, min(tournament_size, len(remaining))
             )
-            winner = max(tournament, key=lambda r: r.score)
+            winner = max(tournament, key=rank_key)
             selected.append(winner)
             remaining.remove(winner)
 

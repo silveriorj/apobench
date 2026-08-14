@@ -79,11 +79,17 @@ class SWIFTv2Optimizer(LengthAwareDedupeMixin, SWIFTOptimizer):
         for record in self.population[:2]:
             details = record.per_sample_details
             if not details and record.text:
-                samples = self.dataset.get_eval_samples("dev", n=self.eval_sample_size)
+                # Same fix as swift.py's _phase_failure_guided: use
+                # _sample_dev (respects HoldoutSelectionMixin's opt_pool
+                # restriction) not dataset.get_eval_samples (leaks holdout
+                # instances into the search), and set scores["dev"] so this
+                # record isn't misranked as "no dev score" by rank_key().
+                samples = self._sample_dev(self.eval_sample_size)
                 result = self.evaluator.evaluate(record.text, samples)
                 details = result.per_sample_details
                 record.per_sample_details = details
                 record.score = result.score
+                record.scores["dev"] = result.score
                 record.performance_vector = result.performance_vector
             failures = [d for d in details if not d["correct"]]
             if failures:

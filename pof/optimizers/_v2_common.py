@@ -45,9 +45,23 @@ class LengthAwareDedupeMixin:
     exact-hash `_is_duplicate` and raw-score `_select_top_k`.
     """
 
-    def _length_adjusted_score(self, record: PromptRecord) -> float:
+    def _length_adjusted_score(self, record: PromptRecord) -> tuple:
+        """Length-penalized score, scale-gated the same way rank_key()
+        (pof/core/types.py) is.
+
+        Bug fix (2026-08-14 optimizer audit): this used to return a plain
+        float derived only from `record.score`, so _select_top_k/
+        _tournament_select below sorted gate-rejected candidates (noisy
+        16-sample minibatch score) directly against gate-passed candidates
+        (full-dev score) -- reintroducing, for every v2 optimizer using
+        this mixin, the exact score-scale-mixing bug rank_key() was built
+        to fix in the v1 base classes. Returning a tuple with the same
+        `"dev" in record.scores` gate as rank_key() ensures a minibatch-only
+        record can never outrank a genuinely dev-scored one; the length
+        penalty still breaks ties within the same tier as before.
+        """
         n_words = len(record.text.split()) if record.text else 0
-        return record.score - LENGTH_PENALTY_PER_WORD * n_words
+        return ("dev" in record.scores, record.score - LENGTH_PENALTY_PER_WORD * n_words)
 
     def _select_top_k(
         self, candidates: List[PromptRecord], k: Optional[int] = None
