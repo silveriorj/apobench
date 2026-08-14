@@ -524,9 +524,17 @@ class BaseOptimizer(ABC):
         self, prompt: str, failures: List[Dict[str, Any]]
     ) -> str:
         """Improve a prompt based on failure analysis."""
+        # Bug found via livebench_coding: unlike input/prediction, 'target'
+        # was embedded unbounded -- fine for short answer strings (BBH/math)
+        # but for task_type="code", target is a JSON blob carrying test
+        # cases, and one dataset (LiveCodeBench's large private_test_cases)
+        # blew a meta-prompt out to 22.5M tokens. Truncate like the other
+        # two fields; a clipped JSON blob is no less informative to the LLM
+        # than the full one (neither is human-readable as "the expected
+        # answer" for code tasks), so this loses no real signal.
         failure_text = "\n".join(
             f"- Input: {f.get('input', '')[:80]}\n"
-            f"  Expected: {f.get('target', '')}\n"
+            f"  Expected: {str(f.get('target', ''))[:80]}\n"
             f"  Got: {f.get('prediction', '')[:80]}"
             for f in failures[:5]
         )

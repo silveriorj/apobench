@@ -278,8 +278,11 @@ class SWIFTOptimizer(HoldoutSelectionMixin, BaseOptimizer):
 
     def _structured_improve(self, prompt: str, failures: List[Dict]) -> Optional[str]:
         """Diagnose failures then engineer an improved prompt."""
+        # Same fix as base.py's _feedback_improve: 'target' was unbounded,
+        # fine for short answers but a large JSON blob (e.g. LiveCodeBench's
+        # test_cases) can blow a meta-prompt out to millions of tokens.
         failure_text = "\n".join(
-            f"- Input: {f.get('input', '')[:60]} | Expected: {f.get('target', '')} | Got: {f.get('prediction', '')[:60]}"
+            f"- Input: {f.get('input', '')[:60]} | Expected: {str(f.get('target', ''))[:60]} | Got: {f.get('prediction', '')[:60]}"
             for f in failures[:5]
         )
 
