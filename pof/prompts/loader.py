@@ -262,5 +262,12 @@ def get_seed_prompt(
             "in your response."
         )
 
+    elif dataset.lower() in ("livebench_coding", "livebench/coding", "livecodebench"):
+        return (
+            "Write a correct Python solution to the following programming "
+            "problem. If a class/method signature is given, complete it "
+            "exactly as specified. Include only the code in your response."
+        )
+
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
