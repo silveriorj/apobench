@@ -610,7 +610,19 @@ def _load_livebench_coding(num_samples: int, seed: int) -> TaskDataset:
             "starter_code": starter_code,
             "func_name": func_name,
         })
-        all_samples.append({"input": question, "target": target})
+        # Bug found via smoke test: train samples' target gets embedded
+        # VERBATIM into few-shot exemplar prompts (base.py's format_exemplar,
+        # task_type="code" path: answer = target). Unlike HumanEval (whose
+        # train target is the short canonical solution), the full JSON blob
+        # above can carry hundreds of private test cases -- one real run hit
+        # an 8.2M-token prompt from this. LiveCodeBench's own 'solution'
+        # field is usually empty, so fall back to a short placeholder
+        # (starter_code, or a one-line stub) instead of ever putting the
+        # scoring JSON into a prompt.
+        canonical = oj.get("solution") or ""
+        if not canonical:
+            canonical = (starter_code.rstrip("\n") + "\n    pass") if starter_code else "pass"
+        all_samples.append({"input": question, "target": target, "_canonical": canonical})
 
     if not all_samples:
         raise DatasetError("livebench/coding returned no usable samples")
@@ -631,8 +643,17 @@ def _load_livebench_coding(num_samples: int, seed: int) -> TaskDataset:
     test = all_samples[:n_test]
     _rest = all_samples[n_test:]
     random.Random(seed).shuffle(_rest)   # run seed varies train/dev only
-    train = _rest[:n_train]
+    train_raw = _rest[:n_train]
     dev = _rest[n_train:]
+
+    # Train samples feed few-shot/Lamarckian operators -- show the short
+    # canonical/placeholder text as the target, not the JSON test blob used
+    # for scoring (see the '_canonical' comment above).
+    train = [
+        {"input": s["input"], "target": s["_canonical"]} for s in train_raw
+    ]
+    dev = [{"input": s["input"], "target": s["target"]} for s in dev]
+    test = [{"input": s["input"], "target": s["target"]} for s in test]
 
     logger.info(
         f"livebench/coding loaded: {len(train)} train, {len(dev)} dev, "
