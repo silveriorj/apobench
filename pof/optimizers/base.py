@@ -147,8 +147,7 @@ class BaseOptimizer(ABC):
             )
 
             # Optimization loop (budget-aware)
-            budget_mgr = getattr(self.llm, "get_budget", None)
-            budget_mgr = budget_mgr() if callable(budget_mgr) else None
+            budget_mgr = self._get_budget_mgr()
             effective_iters = self.num_iterations
             if budget_mgr and getattr(budget_mgr, "config", None) and getattr(budget_mgr.config, "max_generations", None):
                 try:
@@ -309,6 +308,26 @@ class BaseOptimizer(ABC):
         """
         return self.dataset.get_eval_samples("dev", n=n, seed=seed)
 
+    def _get_budget_mgr(self) -> Optional[Any]:
+        """Fetch the attached BudgetManager, if any (mirrors optimize()'s
+        own lookup so eval helpers can record durations / check the
+        mid-generation reserve without duplicating the getattr dance)."""
+        get_budget = getattr(self.llm, "get_budget", None)
+        return get_budget() if callable(get_budget) else None
+
+    def _timed_evaluate(self, prompt: str, samples: List[Dict[str, str]]) -> EvalResult:
+        """self.evaluator.evaluate(), timed, feeding the observed duration
+        to the budget manager's rolling average (see BudgetManager.
+        record_eval_duration) so remaining_search_time()'s finalize reserve
+        can adapt to how slow evaluation actually is on this task, and
+        has_time_for_another_eval() has real data to check against."""
+        budget_mgr = self._get_budget_mgr()
+        start = time.time()
+        result = self.evaluator.evaluate(prompt, samples)
+        if budget_mgr is not None:
+            budget_mgr.record_eval_duration(time.time() - start)
+        return result
+
     def _evaluate_population(self, population: List[PromptRecord]) -> None:
         """Evaluate all candidates in the population."""
         samples = self._sample_dev(self.eval_sample_size)
@@ -319,7 +338,7 @@ class BaseOptimizer(ABC):
                 f"[Pop eval] candidate {idx}/{len(to_eval)}"
                 f" op={record.operator} prompt={record.text[:60]!r}..."
             )
-            result = self.evaluator.evaluate(record.text, samples)
+            result = self._timed_evaluate(record.text, samples)
             record.score = result.score
             record.performance_vector = result.performance_vector
             record.per_sample_details = result.per_sample_details
@@ -331,11 +350,15 @@ class BaseOptimizer(ABC):
     ) -> List[PromptRecord]:
         """Evaluate candidates with racing against baseline."""
         samples = self._sample_dev(self.eval_sample_size)
+        budget_mgr = self._get_budget_mgr()
         for record in candidates:
             if record.text:
+                start = time.time()
                 result = self.evaluator.evaluate_with_racing(
                     record.text, samples, baseline_score
                 )
+                if budget_mgr is not None:
+                    budget_mgr.record_eval_duration(time.time() - start)
                 record.score = result.score
                 record.performance_vector = result.performance_vector
                 record.per_sample_details = result.per_sample_details
@@ -358,17 +381,46 @@ class BaseOptimizer(ABC):
 
         Rejected candidates keep their minibatch score (they rank low and
         drop out at selection) and are marked in metadata for the audit.
+
+        Bug fix (2026-08-15, found via the BBH v2-strip validation run):
+        the per-generation budget check (should_stop_for_search(), in
+        optimize()'s loop) only runs once BEFORE a generation starts -- a
+        single generation with several gate-passed candidates, each
+        needing a full-dev eval, could still consume the ENTIRE finalize
+        reserve on its own before the next check ever ran (observed: 3 of
+        5 BBH tasks in one run hit BudgetExceeded during _finalize()
+        despite the 2026-08-13 reserve fix). Now checks
+        has_time_for_another_eval() before EACH full-dev eval in this
+        loop -- once time is short, remaining gate-passed candidates are
+        skipped (kept at their minibatch score, flagged in metadata) rather
+        than evaluated regardless of cost, so a generation can bail
+        mid-list instead of only being caught at its own end.
         """
         minibatch = self._sample_dev(minibatch_size, seed=random.randint(0, 10**6))
         full_samples = self._sample_dev(self.eval_sample_size)
+        budget_mgr = self._get_budget_mgr()
 
         n_pass = 0
+        n_budget_skipped = 0
         for record in candidates:
             if not record.text:
                 continue
             mb = self.evaluator.evaluate(record.text, minibatch)
             if mb.score + slack >= baseline_score:
+                if budget_mgr is not None and not budget_mgr.has_time_for_another_eval():
+                    record.score = mb.score
+                    record.scores["minibatch"] = mb.score
+                    record.metadata["gate"] = "budget_skipped"
+                    n_budget_skipped += 1
+                    logger.info(
+                        f"[Gate] op={record.operator}: minibatch={mb.score:.3f} "
+                        f"passed slack but SKIPPED full eval (finalize reserve low)"
+                    )
+                    continue
+                start = time.time()
                 result = self.evaluator.evaluate(record.text, full_samples)
+                if budget_mgr is not None:
+                    budget_mgr.record_eval_duration(time.time() - start)
                 record.score = result.score
                 record.performance_vector = result.performance_vector
                 record.per_sample_details = result.per_sample_details
@@ -390,6 +442,7 @@ class BaseOptimizer(ABC):
         logger.info(
             f"[Minibatch gate] {n_pass}/{len(candidates)} candidates passed "
             f"(baseline={baseline_score:.3f}, slack={slack})"
+            + (f", {n_budget_skipped} skipped (reserve low)" if n_budget_skipped else "")
         )
         return candidates
 

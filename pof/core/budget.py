@@ -8,11 +8,24 @@ Centralized BudgetManager used by Orchestrator/LLM/Optimizers to ensure:
 from __future__ import annotations
 
 import time
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from pof.config.schemas import BudgetConfig
 from pof.core.exceptions import BudgetExceeded
 from pof.core.types import LLMUsageStats
+
+
+# Rolling window of observed full-dev-evaluation wall-clock durations
+# (seconds), used to size the finalize-time reserve dynamically -- see
+# remaining_search_time()'s docstring for the fixed-reserve gap this closes.
+_EVAL_DURATION_WINDOW = 10
+
+# Generic estimate of how many full evaluations _finalize() needs (e.g.
+# HoldoutSelectionMixin re-evaluates FINALIZE_TOP_K=6 finalists on the
+# holdout slice). Not tied to any specific optimizer's exact constant --
+# just a conservative shared assumption so budget.py doesn't need to know
+# about holdout.py.
+_FINALIZE_EVAL_COUNT_ESTIMATE = 6
 
 
 class BudgetManager:
@@ -39,12 +52,33 @@ class BudgetManager:
         self.config: BudgetConfig = cfg or BudgetConfig()
         self.start_time: float = time.time()
         self._llm: Optional[Any] = None
+        self._eval_durations: List[float] = []
 
     # ---- Lifecycle ----
 
     def attach_llm(self, llm: Any) -> None:
         """Attach LLM instance to read live usage stats."""
         self._llm = llm
+
+    # ---- Adaptive finalize-reserve tracking ----
+
+    def record_eval_duration(self, seconds: float) -> None:
+        """Feed an observed full-dev-evaluation wall-clock duration into a
+        rolling window, used by remaining_search_time()/has_time_for_another_eval()
+        to size the finalize-time reserve to how slow evaluation actually is
+        on this task/dataset, instead of a fixed guess a single slow
+        generation could still blow through."""
+        self._eval_durations.append(max(0.0, seconds))
+        if len(self._eval_durations) > _EVAL_DURATION_WINDOW:
+            self._eval_durations.pop(0)
+
+    def avg_eval_duration(self) -> Optional[float]:
+        """Mean of the most recent recorded full-eval durations, or None
+        if none have been recorded yet (e.g. before generation 0's
+        evaluation completes)."""
+        if not self._eval_durations:
+            return None
+        return sum(self._eval_durations) / len(self._eval_durations)
 
     # ---- Read current usage ----
 
@@ -66,20 +100,62 @@ class BudgetManager:
         """Like remaining_time(), but reserves a slice for _finalize().
 
         The optimization loop should check this (not remaining_time()) when
-        deciding whether to start another generation, so a fixed slice of
-        the time budget is always left over for post-search work like
-        holdout re-ranking. Per-call hard enforcement (_ensure_call_possible)
-        still uses the true remaining_time(), so this reserve is advisory
-        for the loop, not a second hard cap.
+        deciding whether to start another generation, so a slice of the
+        time budget is always left over for post-search work like holdout
+        re-ranking. Per-call hard enforcement (_ensure_call_possible) still
+        uses the true remaining_time(), so this reserve is advisory for the
+        loop, not a second hard cap.
+
+        The reserve is the LARGER of the static config-driven floor/fraction
+        and a dynamic estimate (avg observed full-eval duration x
+        _FINALIZE_EVAL_COUNT_ESTIMATE). Found via the 2026-08-14 BBH
+        validation run: a single generation with slow per-candidate
+        evaluation (BBH's code-adjacent tasks run much slower than
+        HumanEval's) could still consume the ENTIRE static reserve on its
+        own, since should_stop_for_search() is only checked once per
+        generation boundary -- a generation that starts with plenty of
+        reserve left can still finish having devoured it all. The dynamic
+        estimate makes the reserve track actual observed cost instead of a
+        fixed guess; has_time_for_another_eval() (below) provides the
+        complementary mid-generation check so a single generation's
+        evaluation phase can bail early rather than only being caught at
+        the next generation boundary.
         """
         rt = self.remaining_time()
         if rt is None:
             return None
-        reserve = max(
+        static_reserve = max(
             self.config.finalize_reserve_min_seconds,
             (self.config.time_seconds or 0) * self.config.finalize_reserve_fraction,
         )
+        avg = self.avg_eval_duration()
+        dynamic_reserve = avg * _FINALIZE_EVAL_COUNT_ESTIMATE if avg is not None else 0.0
+        reserve = max(static_reserve, dynamic_reserve)
         return max(0.0, rt - reserve)
+
+    def has_time_for_another_eval(self) -> bool:
+        """True if there's likely enough time for one more full-dev
+        evaluation without starving _finalize()'s reserve.
+
+        Meant to be checked WITHIN a generation, before each individual
+        full-eval call (e.g. inside _evaluate_with_minibatch_gate's
+        per-candidate loop) -- not just once per generation boundary like
+        should_stop_for_search(). This is what lets a generation bail
+        partway through its evaluation phase (skip remaining candidates,
+        leave them at their minibatch/unset score) instead of running every
+        gate-passed candidate's full eval regardless of how much reserve
+        that would consume.
+        """
+        rst = self.remaining_search_time()
+        if rst is None:
+            return True
+        avg = self.avg_eval_duration()
+        if avg is None:
+            # No observations yet (e.g. generation 0) -- fall back to a
+            # coarse "any reserve left at all" check rather than blocking
+            # the very first evaluation before there's any duration data.
+            return rst > 0.0
+        return rst > avg
 
     def remaining_calls(self) -> Optional[int]:
         if self.config.max_calls is None:
