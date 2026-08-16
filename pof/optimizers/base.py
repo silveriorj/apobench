@@ -428,15 +428,33 @@ class BaseOptimizer(ABC):
         evaluate_with_racing which loses _batch_generate's batching
         throughput -- see that method's own docstring for why the
         between-batch variant exists). A gate-passed candidate that turns
-        out to be clearly worse than `baseline_score` once enough of the
-        full-dev set has been seen is eliminated early instead of always
-        paying for all eval_sample_size samples -- this is the main lever
-        for cutting the multi-hour BBH run times seen in this session's
-        validation sweeps, without changing what "passing the gate" means.
+        out to be clearly worse than the racing threshold once enough of
+        the full-dev set has been seen is eliminated early instead of
+        always paying for all eval_sample_size samples.
+
+        Threshold tightened (2026-08-16, after the first real validation
+        run showed ZERO racing eliminations end to end): using
+        `baseline_score` here was too loose to ever fire, because the
+        minibatch gate immediately above already filters to candidates
+        within `slack` of baseline -- every candidate reaching this call
+        already cleared a similar bar, so "clearly worse than baseline"
+        almost never triggers. Now races against the current best RECORD's
+        score minus the same `slack` (falls back to `baseline_score` if
+        there's no best_record yet, e.g. generation 0) -- a real,
+        continuously-tightening target as the population improves, while
+        the `slack` margin still gives near-best candidates a fair shot
+        rather than eliminating anything short of an outright new best
+        (avoiding the premature-convergence risk flagged in this session's
+        own optimizer audit -- population diversity already comes from a
+        narrow set of parent-drawing operators, this shouldn't narrow it
+        further by cutting every near-tie early).
         """
         minibatch = self._sample_dev(minibatch_size, seed=random.randint(0, 10**6))
         full_samples = self._sample_dev(self.eval_sample_size)
         budget_mgr = self._get_budget_mgr()
+        racing_threshold = (
+            self.best_record.score - slack if self.best_record else baseline_score
+        )
 
         n_pass = 0
         n_budget_skipped = 0
@@ -457,7 +475,7 @@ class BaseOptimizer(ABC):
                     continue
                 start = time.time()
                 result = self.evaluator.evaluate_with_batch_racing(
-                    record.text, full_samples, threshold=baseline_score
+                    record.text, full_samples, threshold=racing_threshold
                 )
                 if budget_mgr is not None:
                     budget_mgr.record_eval_duration(time.time() - start)
