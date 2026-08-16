@@ -45,6 +45,32 @@ _IMPROVE_SYSTEM_PROMPT = (
     "Output only the improved instruction text — no preamble, no labels."
 )
 
+# Shared addition to the failure-review meta-prompts (base.py's
+# _feedback_improve, used by apex's failure_guided operator; swift.py's
+# _structured_improve, used by SWIFT's own failure-guided phase and
+# swift_v2's second pass). Added 2026-08-15 after inspecting real winning
+# prompts from a BBH strip run: the search had independently discovered
+# this exact distinction on its own (formal_fallacies' winner explicitly
+# tells the model not to key off the phrase "perfectly valid argument" and
+# to judge actual logical structure instead) -- this instruction makes
+# that a standing part of the diagnostic step instead of leaving it to
+# chance, so failure review reliably separates "the model is reasoning
+# wrong" from "the model is reasoning fine but the output shape or a
+# surface shortcut is the real problem," and fixes the one that's
+# actually broken rather than always reaching for more reasoning guidance.
+_FAILURE_DIAGNOSIS_CHECKLIST = (
+    "When diagnosing, first classify the failure: (a) the reasoning/logic "
+    "itself is wrong or missing task-relevant steps, or (b) the reasoning "
+    "is likely fine but the output format isn't being followed correctly "
+    "(wrong shape, missing required label/prefix, extra text), or (c) the "
+    "input contains a surface cue that looks like it states the answer "
+    "(e.g. a phrase that sounds like a verdict) and the model may be "
+    "keying off that instead of the actual content. Fix whichever is the "
+    "true cause -- do not add more reasoning guidance to fix a formatting "
+    "problem, and if (c) applies, explicitly instruct the model to ignore "
+    "misleading surface phrasing and judge the actual content instead."
+)
+
 
 def format_exemplar(evaluator: Any, sample: Dict[str, str], max_input: Optional[int] = None) -> str:
     """Render one few-shot demonstration in the OUTPUT FORMAT the scorer expects.
@@ -602,6 +628,7 @@ class BaseOptimizer(ABC):
             "The following instruction was used but produced incorrect outputs "
             "for some inputs. Analyze the failures and rewrite the instruction "
             "to fix these issues.\n\n"
+            f"{_FAILURE_DIAGNOSIS_CHECKLIST}\n\n"
             f"Current instruction:\n{prompt}\n\n"
             f"Failures:\n{failure_text}\n\n"
             "Improved instruction:"

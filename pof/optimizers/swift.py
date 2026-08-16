@@ -29,7 +29,13 @@ from typing import Any, Dict, List, Optional
 
 from pof.core.types import GenerationConfig, PromptRecord
 from pof.optimizers import register_optimizer
-from pof.optimizers.base import format_exemplar, BaseOptimizer, _GENERATE_SYSTEM_PROMPT, _IMPROVE_SYSTEM_PROMPT
+from pof.optimizers.base import (
+    format_exemplar,
+    BaseOptimizer,
+    _GENERATE_SYSTEM_PROMPT,
+    _IMPROVE_SYSTEM_PROMPT,
+    _FAILURE_DIAGNOSIS_CHECKLIST,
+)
 from pof.optimizers.holdout import HoldoutSelectionMixin
 
 logger = logging.getLogger(__name__)
@@ -322,6 +328,7 @@ class SWIFTOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         meta_prompt = (
             "You are an expert prompt engineer. Analyze why this instruction fails "
             "on certain inputs, then write an improved version.\n\n"
+            f"{_FAILURE_DIAGNOSIS_CHECKLIST}\n\n"
             f"Current instruction:\n{prompt}\n\n"
             f"Failure cases:\n{failure_text}\n\n"
             "Step 1: Diagnose the root cause of failures.\n"
