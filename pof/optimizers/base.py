@@ -421,6 +421,18 @@ class BaseOptimizer(ABC):
         skipped (kept at their minibatch score, flagged in metadata) rather
         than evaluated regardless of cost, so a generation can bail
         mid-list instead of only being caught at its own end.
+
+        Cost/speed improvement (2026-08-15, SOTA-APO research pass): the
+        Stage-2 full-dev eval now runs via evaluate_with_batch_racing
+        (Hoeffding early-stop BETWEEN batches, not the older per-sample
+        evaluate_with_racing which loses _batch_generate's batching
+        throughput -- see that method's own docstring for why the
+        between-batch variant exists). A gate-passed candidate that turns
+        out to be clearly worse than `baseline_score` once enough of the
+        full-dev set has been seen is eliminated early instead of always
+        paying for all eval_sample_size samples -- this is the main lever
+        for cutting the multi-hour BBH run times seen in this session's
+        validation sweeps, without changing what "passing the gate" means.
         """
         minibatch = self._sample_dev(minibatch_size, seed=random.randint(0, 10**6))
         full_samples = self._sample_dev(self.eval_sample_size)
@@ -444,7 +456,9 @@ class BaseOptimizer(ABC):
                     )
                     continue
                 start = time.time()
-                result = self.evaluator.evaluate(record.text, full_samples)
+                result = self.evaluator.evaluate_with_batch_racing(
+                    record.text, full_samples, threshold=baseline_score
+                )
                 if budget_mgr is not None:
                     budget_mgr.record_eval_duration(time.time() - start)
                 record.score = result.score
@@ -453,9 +467,11 @@ class BaseOptimizer(ABC):
                 record.scores["dev"] = result.score
                 record.scores["minibatch"] = mb.score
                 n_pass += 1
+                raced_note = " [raced]" if result.metadata.get("racing_terminated") else ""
                 logger.info(
                     f"[Gate] op={record.operator}: minibatch={mb.score:.3f} "
-                    f"→ dev={result.score:.3f} (selection uses dev)"
+                    f"→ dev={result.score:.3f} (n={result.num_total}/{self.eval_sample_size}"
+                    f"{raced_note}, selection uses dev)"
                 )
             else:
                 record.score = mb.score
