@@ -28,7 +28,7 @@ import random
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from pof.core.types import OptimizationResult, PromptRecord, rank_key
+from pof.core.types import OptimizationResult, PromptRecord, pareto_frontier_coverage, rank_key
 from pof.optimizers import register_optimizer
 from pof.optimizers.base import format_exemplar, BaseOptimizer, _GENERATE_SYSTEM_PROMPT, _IMPROVE_SYSTEM_PROMPT
 from pof.optimizers.holdout import HoldoutSelectionMixin
@@ -83,6 +83,7 @@ class APEXOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         candidates_per_operator: int = 2,
         ucb_c: float = 0.5,
         use_holdout_selection: bool = True,
+        frontier_pull_prob: float = 0.5,
         **kwargs,
     ):
         super().__init__(
@@ -101,6 +102,11 @@ class APEXOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         ]
         self.candidates_per_operator = candidates_per_operator
         self.ucb_c = ucb_c
+        # Probability that a tournament bout's non-elite draw includes a
+        # candidate pulled from the Pareto frontier (weighted by instance
+        # coverage) instead of an unweighted random draw from the full
+        # pool -- see _tournament_select's docstring / pareto_frontier_coverage.
+        self.frontier_pull_prob = frontier_pull_prob
         self._operator_scores: Dict[str, List[float]] = {}
         # Must match the `slack` passed to _evaluate_with_minibatch_gate below
         # (base.py's own default is 0.10; kept explicit here, not implicit,
@@ -358,15 +364,47 @@ class APEXOptimizer(HoldoutSelectionMixin, BaseOptimizer):
     def _tournament_select(
         self, candidates: List[PromptRecord], tournament_size: int = 3
     ) -> List[PromptRecord]:
-        """Tournament selection with elitism."""
+        """Tournament selection with elitism, widened by a GEPA-style
+        Pareto frontier so the parent pool isn't purely scalar top-K.
+
+        2026-08-17: added per Dissertacao/apo_literature_survey.md §1 (GEPA,
+        Agrawal et al. 2025, arXiv:2507.19457) -- our own audit flagged that
+        most operators only ever draw parents from population[:3]/[:4],
+        which risks premature convergence: a candidate that's uniquely
+        strong on a handful of hard dev instances but middling on average
+        gets crowded out by whichever candidate has the best mean, even
+        though crossing it with the generalist could combine complementary
+        strengths. `pareto_frontier_coverage` (pof/core/types.py) identifies
+        candidates that are the best-or-tied-best scorer on at least one dev
+        instance; this method biases tournament draws toward that set,
+        weighted by how many instances each frontier member uniquely covers,
+        without removing the existing scalar elitism (population[0] is still
+        always the rank_key-best record) or the existing random tournament
+        draw (which still runs every time -- the frontier pull is an EXTRA
+        candidate added to some bouts, not a replacement).
+
+        Falls back to the previous pure-scalar tournament whenever the
+        frontier is empty or degenerate (fewer than 2 dev-scored candidates
+        this generation, e.g. generation 1 before any full-dev evals exist)
+        -- see pareto_frontier_coverage's docstring for exactly when that is.
+        """
         sorted_candidates = sorted(candidates, key=rank_key, reverse=True)
         selected = [sorted_candidates[0]]
+
+        coverage = pareto_frontier_coverage(candidates)
 
         remaining = sorted_candidates[1:]
         while len(selected) < self.population_size and remaining:
             tournament = random.sample(
                 remaining, min(tournament_size, len(remaining))
             )
+            if coverage and random.random() < self.frontier_pull_prob:
+                frontier_pool = [r for r in remaining if r.id in coverage]
+                if frontier_pool:
+                    weights = [coverage[r.id] for r in frontier_pool]
+                    pulled = random.choices(frontier_pool, weights=weights, k=1)[0]
+                    if pulled not in tournament:
+                        tournament.append(pulled)
             winner = max(tournament, key=rank_key)
             selected.append(winner)
             remaining.remove(winner)

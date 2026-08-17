@@ -121,6 +121,58 @@ def rank_key(record: "PromptRecord") -> tuple:
     return ("dev" in record.scores, record.score)
 
 
+def pareto_frontier_coverage(records: List["PromptRecord"]) -> Dict[str, int]:
+    """GEPA-style per-instance Pareto frontier: {record.id: n_instances_won}
+    for every record that is the best (or tied-best) scorer on at least one
+    dev instance, restricted to records carrying a real full-dev
+    `performance_vector`. Records not on the frontier are omitted entirely,
+    not present with a 0 count.
+
+    Ref: Agrawal et al. 2025, "GEPA: Reflective Prompt Evolution Can
+    Outperform Reinforcement Learning" (arXiv:2507.19457). GEPA keeps a
+    candidate alive if it's uniquely (or jointly) best on any single
+    training instance, even with a lower aggregate score than the current
+    generalist -- preventing a locally-strong-but-narrow candidate from
+    being crowded out purely by mean-score ranking. Surfaced in this
+    project's 2026-08-16 literature survey (`Dissertacao/apo_literature_survey.md`
+    §1) as the single most directly transplantable fix for the
+    narrow-parent-pool premature-convergence risk our own audit flagged
+    (most operators only ever draw parents from population[:3]/[:4]).
+
+    Only records with `"dev" in record.scores` are eligible: their
+    `performance_vector` is scored against the fixed eval_sample_size dev
+    slice (`BaseOptimizer._sample_dev`'s `seed=42` default is unconditional,
+    so the same ordered sample set backs every full-dev evaluation in a
+    run), which is what makes per-instance-index comparison valid across
+    candidates from different generations. Gate-rejected candidates carry a
+    minibatch-only vector scored against a freshly random subset each pull
+    and are not index-comparable, so they're excluded here even if they
+    happen to have a non-empty performance_vector.
+
+    An instance where every eligible record scored 0 contributes no winner
+    (nobody to credit as "the one who solved this") -- that would otherwise
+    put every eligible record on the frontier for that instance and defeat
+    the purpose of the mechanism.
+    """
+    eligible = [r for r in records if "dev" in r.scores and r.performance_vector]
+    if len(eligible) < 2:
+        return {}
+    length = len(eligible[0].performance_vector)
+    eligible = [r for r in eligible if len(r.performance_vector) == length]
+    if len(eligible) < 2 or length == 0:
+        return {}
+
+    coverage: Dict[str, int] = {}
+    for i in range(length):
+        best_val = max(r.performance_vector[i] for r in eligible)
+        if best_val <= 0:
+            continue
+        for r in eligible:
+            if r.performance_vector[i] == best_val:
+                coverage[r.id] = coverage.get(r.id, 0) + 1
+    return coverage
+
+
 @dataclass
 class EvalResult:
     """Result of evaluating a prompt on a set of samples."""
