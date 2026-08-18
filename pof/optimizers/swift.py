@@ -25,9 +25,10 @@ Budget breakdown (population_size K=5):
 from __future__ import annotations
 
 import logging
+import random
 from typing import Any, Dict, List, Optional
 
-from pof.core.types import GenerationConfig, PromptRecord
+from pof.core.types import GenerationConfig, PromptRecord, pareto_frontier_coverage, rank_key
 from pof.optimizers import register_optimizer
 from pof.optimizers.base import (
     format_exemplar,
@@ -57,6 +58,7 @@ class SWIFTOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         evaluator,
         population_size: int = 8,
         use_holdout_selection: bool = True,
+        frontier_pull_prob: float = 0.5,
         **kwargs,
     ):
         super().__init__(
@@ -73,6 +75,42 @@ class SWIFTOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         # previously had no correction for dev-pool argmax's winner's-curse
         # bias at all.
         self._init_holdout(use_holdout_selection=use_holdout_selection)
+        # GEPA-style Pareto-frontier injection (ported from apex.py, 2026-08-18).
+        # Probability that _select_top_k replaces its weakest slot with a
+        # frontier-weighted candidate not already in the top-K.
+        self.frontier_pull_prob = frontier_pull_prob
+
+    def _select_top_k(
+        self, candidates: List[PromptRecord], k: Optional[int] = None
+    ) -> List[PromptRecord]:
+        """Top-K selection widened by a GEPA-style Pareto frontier injection.
+
+        Ported from apex._tournament_select (2026-08-18): with probability
+        `frontier_pull_prob`, replaces the weakest slot in the top-K with a
+        frontier-sampled candidate (weighted by instance-coverage count) that
+        is not already in the selected set. Maintains population_size invariant.
+
+        Falls back to base-class pure scalar top-K when the frontier is empty
+        or fewer than 2 dev-scored candidates exist — same guard as APEX.
+        """
+        k = k or self.population_size
+        sorted_candidates = sorted(candidates, key=rank_key, reverse=True)
+        selected = list(sorted_candidates[:k])
+
+        if random.random() < self.frontier_pull_prob:
+            coverage = pareto_frontier_coverage(candidates)
+            if coverage:
+                selected_ids = {r.id for r in selected}
+                frontier_pool = [
+                    r for r in sorted_candidates[k:] if r.id in coverage
+                ]
+                if frontier_pool:
+                    weights = [coverage[r.id] for r in frontier_pool]
+                    pulled = random.choices(frontier_pool, weights=weights, k=1)[0]
+                    if pulled.id not in selected_ids:
+                        selected[-1] = pulled  # replace weakest slot
+
+        return selected
 
     def _init_population(self) -> List[PromptRecord]:
         """Phase 0: Diverse seed generation.
