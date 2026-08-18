@@ -33,3 +33,6 @@ checkpoints/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
