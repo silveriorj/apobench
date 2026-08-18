@@ -77,17 +77,20 @@ class SWIFTOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         self.frontier_pull_prob = frontier_pull_prob
 
     def _select_top_k(
-        self, candidates: List[PromptRecord], k: Optional[int] = None
+        self, candidates: List[PromptRecord], k: Optional[int] = None,
+        tournament_size: int = 3,
     ) -> List[PromptRecord]:
-        """Top-K selection widened by a GEPA-style Pareto frontier injection.
+        """Tournament selection with elitism, widened by a GEPA-style
+        Pareto frontier -- ported from apex.py's _tournament_select.
 
-        Elite (rank_key-best) is always kept. Each remaining slot
-        independently has `frontier_pull_prob` chance to be filled by a
-        frontier-sampled candidate (weighted by instance-coverage count)
-        instead of the next-best scalar candidate -- mirrors apex.py's
-        per-tournament-bout injection so the intervention scales with
-        population_size instead of firing once per call regardless of it.
-        Falls back to pure scalar top-K when the frontier is empty.
+        A frontier candidate is only ADDED to a random tournament bout; the
+        bout's winner is still decided by rank_key (scalar) against its
+        competitors, so a frontier-only candidate must beat 2-3 random
+        opponents on raw score to actually survive. An earlier version of
+        this method unconditionally inserted the frontier pick with no
+        contest, which is strictly more aggressive than APEX's mechanism
+        and measurably hurt SWIFT (EXP-016 relaunch, 2026-08-18) -- this
+        restores parity with the actual GEPA-style widening.
         """
         k = k or self.population_size
         sorted_candidates = sorted(candidates, key=rank_key, reverse=True)
@@ -96,15 +99,17 @@ class SWIFTOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         remaining = sorted_candidates[1:]
 
         while len(selected) < k and remaining:
+            tournament = random.sample(remaining, min(tournament_size, len(remaining)))
             if coverage and random.random() < self.frontier_pull_prob:
                 frontier_pool = [r for r in remaining if r.id in coverage]
                 if frontier_pool:
                     weights = [coverage[r.id] for r in frontier_pool]
                     pulled = random.choices(frontier_pool, weights=weights, k=1)[0]
-                    selected.append(pulled)
-                    remaining.remove(pulled)
-                    continue
-            selected.append(remaining.pop(0))
+                    if pulled not in tournament:
+                        tournament.append(pulled)
+            winner = max(tournament, key=rank_key)
+            selected.append(winner)
+            remaining.remove(winner)
 
         return selected
 
