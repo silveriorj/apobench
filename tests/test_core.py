@@ -95,11 +95,20 @@ class TestOptimizationHistory:
         history.record_generation(0, records)
         assert len(history.generations) == 1
         assert history.generations[0].best_score == 0.4
-        # Top 2 should keep text, rest stripped
+        # Stripping happens only at export time (to_dict), never on live
+        # records -- optimizers keep references to these objects and
+        # stripping mid-run would feed empty prompts to mutation operators.
+        for r in records:
+            assert r.is_complete is True
+        # Top 2 by score should keep text in the export; the rest stripped
+        # (all 5 share operator="init", so the diversity-keep rule doesn't
+        # add anyone beyond the top-2 here).
         sorted_records = sorted(records, key=lambda r: r.score, reverse=True)
-        assert sorted_records[0].is_complete is True
-        assert sorted_records[1].is_complete is True
-        assert sorted_records[2].is_complete is False
+        exported = history.to_dict()["records"]
+        assert exported[sorted_records[0].id]["is_complete"] is True
+        assert exported[sorted_records[1].id]["is_complete"] is True
+        assert exported[sorted_records[2].id]["is_complete"] is False
+        assert exported[sorted_records[2].id]["text"] == ""
 
     def test_lineage_tracking(self):
         history = OptimizationHistory()

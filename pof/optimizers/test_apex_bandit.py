@@ -52,32 +52,38 @@ def test_select_operators_pull_count_is_denominator_not_survivor_count():
     """Regression test for the pull-counting bug: an arm credited with N
     reward entries (each entry = one pull, success or not, per the fixed
     _step) must use N as its pull count in the UCB formula, not a smaller
-    survivor count. Verify by hand-computing the expected UCB value."""
+    survivor count. Verify by hand-computing the expected UCB value.
+
+    All arms are given >= MIN_OPERATOR_PULLS pulls so none are
+    force-included by that floor -- this isolates the pull-count-as-
+    denominator behavior from the (separately-tested) force-inclusion
+    mechanism, which would otherwise swamp a low-pull-count setup like the
+    one this test used before MIN_OPERATOR_PULLS existed.
+    """
     import math
     opt = _bare_apex()
-    # arm A: 4 pulls, rewards average to 0.0 (some successful, some not)
-    # arm B: 2 pulls, rewards average to 0.0
+    # arm A: 8 pulls, mean 0.0 (more pulls -> smaller bonus)
+    # arm B: 4 pulls, mean 0.0 (fewer pulls -> bigger bonus, same mean)
+    # 5 losers: 4 pulls each, mean -1.0 -- clearly worse, excluded by UCB rank
     opt._operator_scores = {
-        "expert_refine": [0.1, -0.1, 0.05, -0.05],  # 4 pulls, mean 0.0
-        "failure_guided": [0.1, -0.1],               # 2 pulls, mean 0.0
-        "crossover": [0.0], "trajectory": [0.0], "semantic_var": [0.0],
-        "few_shot": [0.0], "format_constraint": [0.0],
+        "expert_refine": [0.1, -0.1, 0.05, -0.05, 0.1, -0.1, 0.05, -0.05],  # 8 pulls
+        "failure_guided": [0.1, -0.1, 0.05, -0.05],                          # 4 pulls
+        "crossover": [-1.0] * 4, "trajectory": [-1.0] * 4,
+        "semantic_var": [-1.0] * 4, "few_shot": [-1.0] * 4,
+        "format_constraint": [-1.0] * 4,
     }
-    total_pulls = sum(len(v) for v in opt._operator_scores.values())  # 4+2+1*5=11
-    expected_bonus_a = 0.5 * math.sqrt(math.log(max(total_pulls, 2)) / 4)
-    expected_bonus_b = 0.5 * math.sqrt(math.log(max(total_pulls, 2)) / 2)
+    total_pulls = sum(len(v) for v in opt._operator_scores.values())  # 8+4+4*5=32
+    expected_bonus_a = 0.5 * math.sqrt(math.log(max(total_pulls, 2)) / 8)
+    expected_bonus_b = 0.5 * math.sqrt(math.log(max(total_pulls, 2)) / 4)
     assert expected_bonus_b > expected_bonus_a, (
         "sanity check on the test itself: fewer pulls must mean a larger bonus"
     )
     top4 = dict(opt._select_operators())
-    # Both A and B should out-rank the 1-pull arms (which have mean 0.0 and a
-    # bigger bonus still, since 1 < 2 < 4) -- just confirm the mechanism ran
-    # without error and returned a valid subset of arms.
-    assert set(top4).issubset({
-        "expert_refine", "failure_guided", "crossover", "trajectory",
-        "semantic_var", "few_shot", "format_constraint",
-    })
     assert len(top4) == 4
+    assert {"expert_refine", "failure_guided"}.issubset(top4), (
+        "both mean-0.0 arms must outrank the mean--1.0 losers regardless of "
+        "pull count"
+    )
 
 
 def test_tournament_select_result_is_rank_ordered():
@@ -190,6 +196,12 @@ class _ScriptedEvaluator:
         score = table.get(text, 0.0)
         return EvalResult(score=score, performance_vector=[], per_sample_details=[])
 
+    def evaluate_with_batch_racing(self, text, samples, threshold, **kwargs):
+        # Stage-2 full-dev eval now goes through racing; these tests assert
+        # exact scripted dev scores, not racing early-stop behavior, so just
+        # return the same scripted full-dev score regardless of threshold.
+        return self.evaluate(text, samples)
+
 
 class _FakeDataset:
     def get_eval_samples(self, split, n=50, seed=None):
@@ -219,6 +231,12 @@ def _stepping_apex(operator_outputs, minibatch_scores, dev_scores, population):
     opt.tracker = _FakeTracker()
     opt.dataset = _FakeDataset()
     opt.evaluator = _ScriptedEvaluator(minibatch_scores, dev_scores)
+    # HoldoutSelectionMixin sits ahead of BaseOptimizer in the MRO;
+    # _sample_dev (called by _evaluate_with_minibatch_gate) checks this
+    # unconditionally, so it must be set even for a holdout-disabled test.
+    opt.use_holdout_selection = False
+    opt._opt_pool = None
+    opt.llm = None  # _get_budget_mgr() does getattr(self.llm, "get_budget", None)
     opt._maybe_stop_if_perfect = lambda threshold=1.0: None
     opt._select_operators = lambda: [
         (name, fn) for name, fn in operator_outputs.items()

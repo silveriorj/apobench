@@ -48,9 +48,14 @@ class TestScoring:
 
     def test_text_normalization(self):
         fn = create_score_function("text")
-        assert fn("Hello World!", "hello world") == 1
+        # Case and whitespace are normalized...
+        assert fn("Hello World", "hello world") == 1
         assert fn("  spaces  ", "spaces") == 1
         assert fn("UPPER", "upper") == 1
+        # ...but punctuation is NOT stripped -- see _normalize_text's
+        # docstring: doing so would collapse bracket-sequence tasks (e.g.
+        # BBH's dyck_languages) to an empty string.
+        assert fn("Hello World!", "hello world") == 0
 
     def test_auto_detection(self):
         fn = create_score_function("auto")
@@ -86,6 +91,10 @@ class TestExtractors:
         assert _extract_boolean("maybe") is None
 
     def test_normalize_text(self):
-        assert _normalize_text("Hello, World!") == "hello world"
+        # Lowercase + whitespace collapse only -- punctuation is preserved
+        # on purpose (stripping it would collapse bracket-sequence answers,
+        # e.g. BBH's dyck_languages, to an empty string).
+        assert _normalize_text("Hello, World!") == "hello, world!"
         assert _normalize_text("  Multiple   Spaces  ") == "multiple spaces"
         assert _normalize_text("") == ""
+        assert _normalize_text("[ { ( ) } ]") == "[ { ( ) } ]"
