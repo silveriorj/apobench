@@ -81,28 +81,30 @@ class SWIFTOptimizer(HoldoutSelectionMixin, BaseOptimizer):
     ) -> List[PromptRecord]:
         """Top-K selection widened by a GEPA-style Pareto frontier injection.
 
-        With probability `frontier_pull_prob`, replaces the weakest slot in
-        the top-K with a frontier-sampled candidate (weighted by
-        instance-coverage count) not already in the selected set. Falls back
-        to pure scalar top-K when the frontier is empty or fewer than 2
-        dev-scored candidates exist.
+        Elite (rank_key-best) is always kept. Each remaining slot
+        independently has `frontier_pull_prob` chance to be filled by a
+        frontier-sampled candidate (weighted by instance-coverage count)
+        instead of the next-best scalar candidate -- mirrors apex.py's
+        per-tournament-bout injection so the intervention scales with
+        population_size instead of firing once per call regardless of it.
+        Falls back to pure scalar top-K when the frontier is empty.
         """
         k = k or self.population_size
         sorted_candidates = sorted(candidates, key=rank_key, reverse=True)
-        selected = list(sorted_candidates[:k])
+        selected = [sorted_candidates[0]]
+        coverage = pareto_frontier_coverage(candidates)
+        remaining = sorted_candidates[1:]
 
-        if random.random() < self.frontier_pull_prob:
-            coverage = pareto_frontier_coverage(candidates)
-            if coverage:
-                selected_ids = {r.id for r in selected}
-                frontier_pool = [
-                    r for r in sorted_candidates[k:] if r.id in coverage
-                ]
+        while len(selected) < k and remaining:
+            if coverage and random.random() < self.frontier_pull_prob:
+                frontier_pool = [r for r in remaining if r.id in coverage]
                 if frontier_pool:
                     weights = [coverage[r.id] for r in frontier_pool]
                     pulled = random.choices(frontier_pool, weights=weights, k=1)[0]
-                    if pulled.id not in selected_ids:
-                        selected[-1] = pulled  # replace weakest slot
+                    selected.append(pulled)
+                    remaining.remove(pulled)
+                    continue
+            selected.append(remaining.pop(0))
 
         return selected
 
