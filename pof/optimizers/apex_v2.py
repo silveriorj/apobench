@@ -1,59 +1,26 @@
 """APEXv2 — APEX with a historically-informed, variance-aware bandit.
 
-Candidate-level audit data across 177 APEX v1 runs (see analysis session) ranked
-the 7 operator arms by mean dev score, win-rate (how often each one actually
-produces the final winning prompt), and pull count. Two findings drove this
-redesign, both about the bandit itself rather than the operator set — no arm was
-a clear "prune this" case the way SWIFT's trajectory_climb was, so all 7 arms are
-kept unchanged:
+Two changes from v1, both about the bandit rather than the operator set
+(all 7 operator implementations are unchanged):
 
-1. **`format_constraint` shouldn't compete for bandit slots at all — it's free.**
-   Its implementation is `record.text.rstrip() + constraint`: a deterministic
-   string append, no LLM call, no generation cost. Every other arm costs a full
-   generation. Gating a zero-cost operation behind UCB1 selection means it has
-   to *win* against 6 arms that cost real budget, which is exactly why v1
-   under-pulled it (358 pulls vs. expert_refine's 1,294) despite it having the
-   best mean dev score of all 7 arms (0.611). v2 removes it from the bandit
-   entirely and always applies it to the current top-2 elites every generation,
-   at zero extra LLM-call cost — it no longer has to compete for budget it
-   doesn't actually need.
+1. **`format_constraint` is free** (`record.text.rstrip() + constraint`: a
+   deterministic string append, no LLM call), so it shouldn't have to
+   compete for bandit slots against 6 arms that cost a full generation.
+   v2 removes it from the bandit and always applies it to the top-2 elites
+   every generation instead.
+2. **UCB1-Tuned** (Auer et al. 2002, the same paper APEX cites for UCB1's
+   regret bound): the exploration bonus is scaled by each arm's own
+   empirical variance instead of a flat term, so noisy arms keep exploring
+   longer and consistent arms converge faster. The remaining 6 arms are
+   also warm-started with `prior_pulls` pseudo-observations at a historical
+   mean, so one unlucky first pull can't bury a normally-strong arm.
 
-2. **Flat exploration bonus ignores known reward variance** for the 6 arms that
-   remain genuinely competitive. Vanilla UCB1's exploration term
-   (`c * sqrt(ln(N)/n)`) is the same shape for every arm regardless of how
-   consistent its rewards actually are, but the arms are NOT equally noisy:
-   `few_shot` has the lowest reward std of the remaining 6 (0.121) while
-   `trajectory` has the highest (0.270) — a low-variance arm's mean is
-   trustworthy after fewer pulls than a high-variance arm's, and a flat bonus
-   can't express that.
+Also mixes in `LengthAwareDedupeMixin` (`_v2_common.py`, shared with
+SWIFTv2): tournament selection nudges toward shorter prompts when
+candidates are within noise of each other (CAPO-style length-penalized
+fitness), and dedup catches near-identical text via `difflib`.
 
-Both fixes come directly from Auer et al. 2002 (the same paper APEX already
-cites for UCB1's regret bound, arXiv-style ref `auer2002finite`) rather than
-inventing something new:
-
-- **Free, always-on `format_constraint`.** Applied to the top-2 elites every
-  generation in `_step`, outside the bandit loop entirely.
-- **Warm-started priors on the remaining 6 arms.** `_operator_scores` is
-  pre-seeded with a small number of pseudo-observations (`prior_pulls`,
-  default 2) at each arm's known historical mean, computed once from the v1
-  audit data below. Standard empirical-Bayes warm start: enough weight to stop
-  a single unlucky first pull from burying a normally-strong arm, but light
-  enough (2 out of a typical 8-12 total pulls per run) that the bandit still
-  adapts to whatever this specific task/model actually rewards.
-- **UCB1-Tuned.** `_select_operators` replaces the flat exploration bonus with
-  Auer et al.'s own variance-aware refinement: the bonus is scaled by
-  `min(1/4, V_i)` where `V_i` is an empirical-variance estimate of the arm's
-  reward, so noisy arms keep exploring longer and consistent arms converge
-  faster.
-
-Also mixes in `LengthAwareDedupeMixin` (see `_v2_common.py`, shared with
-SWIFTv2): tournament selection now nudges toward shorter prompts when
-candidates are within noise of each other on raw dev score (CAPO-style
-length-penalized fitness), and duplicate detection catches near-identical
-text via `difflib`, not just byte-identical text — both free, CPU-only.
-
-Registered as a separate optimizer name ("apex_v2") — v1 and its existing
-results are untouched.
+Registered as a separate optimizer name ("apex_v2") — v1 is untouched.
 """
 from __future__ import annotations
 
@@ -68,29 +35,14 @@ from pof.optimizers.apex import APEXOptimizer
 
 logger = logging.getLogger(__name__)
 
-# Historical per-arm (mean, std) from the v1 audit trail (177 runs, primary
-# Qwen3-4B study + multi-model runs), for the 6 arms that remain in the
-# bandit. format_constraint is excluded here -- it's no longer a competing
-# arm (see module docstring). Used only as a warm-start prior -- the bandit
-# still adapts to the live task/model from there.
-#
-# STALE AS OF the APEXOptimizer._step() credit-assignment fix: these means
-# were computed from v1's absolute candidate SCORE (v1 credited
-# record.score directly, no baseline subtraction), and every arm's mean
-# clustered near 0.53-0.60 because all v1 arms drew parents from the same
-# elite pool -- the exact flaw the fix addresses. The base class now
-# credits FITNESS IMPROVEMENT (candidate score minus its own parent's
-# score), a quantity centered near 0 with a different scale entirely.
-# Warm-starting v2's bandit with the old absolute-score means would make
-# the prior dominate and miscalibrate every live pull for `prior_pulls`
-# rounds, since a ~0.55 "improvement" is not a plausible value. Set to 0.0
-# (neutral) until this project re-derives real improvement-based priors
-# from a fresh v1-lineage audit trail collected under the fixed metric --
-# recomputing them from the OLD audit trail is not possible, since that
-# trail never recorded per-candidate parent scores. The std values are left
-# as a rough relative-noisiness ranking across arms (still directionally
-# informative for the UCB1-Tuned variance term) but should also be treated
-# as approximate until re-derived.
+# Historical per-arm (mean, std) for the 6 arms that remain in the bandit
+# (format_constraint excluded -- see module docstring). Used only as a
+# warm-start prior; the bandit adapts to the live task/model from there.
+# Means are pinned at 0.0: the base class credits fitness IMPROVEMENT
+# (candidate score minus a shared elite baseline), a quantity centered near
+# 0, and reusing the old absolute-score means here would miscalibrate the
+# first `prior_pulls` rounds. std values are an approximate relative-
+# noisiness ranking, used by the UCB1-Tuned variance term.
 HISTORICAL_ARM_STATS: Dict[str, Tuple[float, float]] = {
     "few_shot":          (0.0, 0.121),
     "crossover":         (0.0, 0.221),
@@ -148,12 +100,9 @@ class APEXv2Optimizer(LengthAwareDedupeMixin, APEXOptimizer):
             return selected
         baseline = self.best_record.score if self.best_record else 0.0
         self._evaluate_with_minibatch_gate(new_records, baseline, slack=self.gate_slack)
-        # Re-sort after tournament: v1's _step() re-sorts its own output for
-        # exactly this reason (population[:k] must be rank-ordered for the
-        # elite-indexing operators), but this method builds ITS OWN final
-        # population from selected+new_records after calling super()._step(),
-        # so it needs the same re-sort independently -- inheriting the fix
-        # via super() does not cover output this method assembles itself.
+        # Must re-sort independently: this method assembles its own final
+        # population from selected+new_records, so v1's re-sort (inside
+        # super()._step()) doesn't cover it.
         final = self._tournament_select(selected + new_records)
         final.sort(key=lambda r: r.score, reverse=True)
         return final

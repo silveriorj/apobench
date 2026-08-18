@@ -1,99 +1,68 @@
 """FUNNELv7 ("FUNNEL-Prime") — the synthesis of every proven mechanism this
 project built, in one legible class.
 
-FUNNEL went through eight iterations this session (v1 -> v2 -> v3 -> v4a/b/c/d
--> v5 -> v6), each adding one measured, evidence-driven mechanism. Every one
-of those mechanisms is still a separate class; "the best method" was whichever
-alias you remembered to type. This is that synthesis, made explicit.
+FUNNEL went through eight iterations (v1 -> v2 -> v3 -> v4a/b/c/d -> v5 ->
+v6), each adding one measured, evidence-driven mechanism. Every one of those
+mechanisms is still a separate class; this is that synthesis, made explicit.
 
-**Inherited unchanged (already proven -- see each origin file for the actual
-measurements this project made; only cited here):**
+**Inherited unchanged (see each origin file for the underlying
+measurements):**
 
-- Accumulating-fresh validation (`funnel_v2.py`): a growing, nested-prefix dev
-  pool, one deterministic shuffle. Fixed a measured dev/test overfitting
-  correlation of -0.695 (dev gains that didn't transfer to test) -> +0.918
-  once every phase saw genuinely fresh instances instead of the same fixed
-  sample four times over.
+- Accumulating-fresh validation (`funnel_v2.py`): a growing, nested-prefix
+  dev pool, one deterministic shuffle — fixes dev/test overfitting from
+  reusing the same fixed sample every phase.
 - Held-out selection (`_finalize`/`_select_on_holdout`, `funnel_v2.py`):
-  re-verifies the top 6 contenders at the run's final N, then picks the
-  winner on a slice the search never touched. Fixed a -0.46 dev/test
-  correlation (winner's curse: the seed scoring highest on dev scored lowest
-  on test) down to a handful of finalists compared on fresh evidence.
-- Demonstration-split family -- `instruction_only`, `few_shot_fixed`,
+  re-verifies top contenders at the run's final N, then picks the winner on
+  a slice the search never touched — corrects the winner's-curse bias of
+  picking the dev-pool argmax directly.
+- Demonstration-split family — `instruction_only`, `few_shot_fixed`,
   `few_shot_aug` (v3/v4c): guaranteed on every phase's top elites because
-  demonstrations are ABSORBING once a candidate carries them -- without a
-  forced bare-instruction candidate, the with-demonstrations form silently
-  takes over the whole population within 1-2 phases and the comparison this
-  family exists to make (does adding demonstrations actually help?) collapses.
+  demonstrations are ABSORBING once a candidate carries them, so without a
+  forced bare-instruction candidate the with-demonstrations form takes over
+  the population within 1-2 phases.
 - Static-baseline floor (v4b): Phase 0 is seeded with the canonical
-  `json_3shot` prompt built from the official chain-of-thought-hub file, so
-  the search can never finish worse than a baseline already known to beat it
-  on some tasks.
+  `json_3shot` prompt, so the search can never finish worse than a baseline
+  already known to beat it on some tasks.
 - Trimmed guarantee + adaptive family-disable gate (v4c + v4a): once the
   guaranteed family's best score stops beating the static baseline (checked
-  from phase 2 onward), it's disabled for the rest of the run -- one-way,
-  self-correcting only in the direction of NOT paying for a family that isn't
-  earning its keep. Measured to shrink formal_fallacies' gap against the
-  static baseline from a significant loss (t=-4.9) to statistically
-  indistinguishable.
+  from phase 2 onward), it's disabled for the rest of the run — one-way,
+  never re-enabled.
 - Batch-level Hoeffding racing, perfect-EM early stop, dev-pool complexity
-  ordering (v4d, "FUNNEL-Lean" -- the best macro-accuracy variant measured to
-  date: 0.715 vs. v4a's 0.701/v3's 0.699/v2's 0.689/v1's 0.677 on Qwen3-4B,
-  7 common BBH tasks): all measured cost reductions with no accuracy cost.
+  ordering (v4d, "FUNNEL-Lean" — the best macro-accuracy variant measured to
+  date): measured cost reductions with no accuracy cost.
 - Mode family + adaptive mode gating (v5 "FUNNEL-Wide" + v6
-  "FUNNEL-Indexed"): eval mode (answer-only / brief-CoT / full-thinking) as a
-  heritable per-candidate property rather than one fixed run-level setting,
-  gated by `REASONING_TASK_INDEX` once real evidence agrees with the
-  prediction. This is the single largest measured effect of anything built
-  this session: boolean_expressions reaches 0.997 under full CoT vs. 0.887-
-  0.896 best answer-only; causal_judgement is WORSE under full CoT (0.583 vs.
-  0.649 answer-only) -- a reversal that independently reproduces Suzgun et
-  al. (2023) Table 3's own CoT-hurts-causal_judgement finding on much larger
-  models. Guessing one mode per run means guessing wrong on a real fraction
-  of tasks; this doesn't guess.
+  "FUNNEL-Indexed"): eval mode (answer-only / brief-CoT / full-thinking) as
+  a heritable per-candidate property rather than one fixed run-level
+  setting, gated by `REASONING_TASK_INDEX` once real evidence agrees with
+  the prediction — the single largest measured effect of anything built
+  this session.
 
 **What v7 adds on top:**
 
 1. Widens `STATIC_ARMS` to also guarantee `multi_aspect_critique` (CRISPO-
-   style: critiques failures along 4 named independent aspects -- answer
-   format, reasoning approach, edge-case handling, instruction clarity --
-   rather than one blended strategy paragraph, so a precise fixable issue on
-   one axis can't get buried under commentary about another). It fits the
-   existing per-elite guarantee mechanism unchanged: like every other
-   guaranteed operator, it targets a specific elite via `_pick_elite`.
+   style: critiques failures along 4 named independent aspects rather than
+   one blended paragraph, so a fixable issue on one axis can't get buried).
+   Fits the existing per-elite guarantee mechanism unchanged.
 
-2. Guarantees `trajectory_momentum` (OPRO's ranked history + an explicit
-   trend-identification step before extrapolating -- TextGrad's "momentum":
-   condition the edit on the DIRECTION of recent improvement, not just the
-   destination) -- but NOT via the same per-elite loop. `t_trajectory_momentum`
-   reads `self.population` directly; it has no per-elite target. Guaranteeing
-   it through `_apply_static_core`'s normal per-elite loop would invoke it
-   `static_top_k` times a phase against the IDENTICAL population-level input
-   -- three correlated stochastic draws billed as three distinct operations.
-   `_apply_static_core` is overridden here to split `STATIC_ARMS` into
-   per-elite operators (looped as usual) and `POPULATION_SCOPED_ARMS`
-   (invoked exactly once per phase, matching what the operator actually is).
+2. Guarantees `trajectory_momentum` (OPRO's ranked history plus TextGrad-
+   style momentum: condition the edit on the DIRECTION of recent
+   improvement, not just the destination) — but NOT via the per-elite loop,
+   since `t_trajectory_momentum` reads `self.population` directly and has no
+   per-elite target; looping it `static_top_k` times would bill correlated
+   draws against an identical input as distinct operations. `_apply_static_core`
+   is overridden to split `STATIC_ARMS` into per-elite operators and
+   `POPULATION_SCOPED_ARMS` (invoked exactly once per phase).
 
-3. Prunes `decompose_recompose` from `BANDIT_ARMS`: confirmed 0/6 fire rate
-   across every run that measured it (its trigger -- a missing REQUIRED
-   grammar facet -- essentially never occurs, since the decomposer always
-   emits both required fields). A dead arm still costs UCB1 exploration
-   budget every time it's pulled; removing it frees that budget for arms that
-   actually produce candidates.
+3. Prunes `decompose_recompose` from `BANDIT_ARMS`: its trigger (a missing
+   required grammar facet) essentially never occurs, so it never fires; a
+   dead arm still costs UCB1 exploration budget whenever it's pulled.
 
-Neither `multi_aspect_critique` nor `trajectory_momentum` is removed from
-`BANDIT_ARMS` by being guaranteed -- precedent already exists for this in
-v3's own design (`few_shot` is guaranteed via the demonstration family AND
-still an ordinary bandit arm, reaching candidates the guarantee's
-`static_top_k` cutoff doesn't cover).
-
-Neither newly-guaranteed operator has an isolated, in-project measurement of
-its own hit rate the way `facet_edit` (1/12) or `few_shot` (1/18) do --
-they're guaranteed here on the strength of their literature grounding
-(CRISPO, TextGrad) and mechanism-level argument, not a measured win rate.
-That's a real difference in evidentiary standing from everything else this
-class guarantees, and it's worth remembering when reading results from this
-method specifically.
+Neither new operator is removed from `BANDIT_ARMS` by being guaranteed —
+same precedent as v3's `few_shot`. Neither has an isolated in-project
+hit-rate measurement the way `facet_edit` or `few_shot` do; they're
+guaranteed on literature grounding (CRISPO, TextGrad) and mechanism-level
+argument rather than a measured win rate, which is a real difference in
+evidentiary standing worth remembering when reading this method's results.
 """
 from __future__ import annotations
 

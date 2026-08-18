@@ -2,35 +2,23 @@
 with successive-halving validation scaling, an output-verbosity barrier gate,
 and automatic trap-task detection.
 
-Relationship to FUNNEL v1 (`funnel.py`): v1 established UCB1 selection over a
-pooled library plus cross-run pruning. v2 keeps both and changes four things,
-each motivated by a measured result from this project or a specific published
-method:
+Relative to FUNNEL v1 (`funnel.py`), which established UCB1 selection over a
+pooled library plus cross-run pruning, v2 changes four things:
 
-1. **Operator pool** — v1 pooled operators from the six methods already in our
-   benchmark. v2 adds ten operators from methods outside it (ETGPO, StraGo,
-   AutoHint, GrIPS, AMPO, UniPrompt) — see `_funnel_v2_techniques.py`. Two are
-   ZERO-LLM-call (GrIPS delete/swap), buying free exploration under a call cap.
+1. **Operator pool** — adds ten operators from methods outside the benchmark
+   (ETGPO, StraGo, AutoHint, GrIPS, AMPO, UniPrompt; see
+   `_funnel_v2_techniques.py`). Two are zero-LLM-call (GrIPS delete/swap).
 
-2. **Identical evaluation protocol to the rest of the benchmark** — every phase
-   evaluates on a flat `eval_sample_size` (50) sample, the same value the other
-   methods use, so the operator pool and the barrier gate are the only things
-   that differ. A scaled schedule was tried and measured first; it cost 53%
-   more than flat-50 and introduced a third protocol difference, so it was
-   dropped (see the note above `MIN_PHASE_N`).
-
-   The sample is a fixed prefix of one deterministically shuffled dev pool
-   rather than a per-call draw. `TaskDataset.get_eval_samples` uses
-   `random.sample`, whose outputs are not nested across different `n` and which
-   re-draws per call; taking a stable prefix guarantees every candidate in a
-   run is scored on exactly the same instances, which is what makes the
-   candidate-vs-candidate comparison in selection meaningful.
+2. **Identical evaluation protocol to the rest of the benchmark** — every
+   phase evaluates on the same flat `eval_sample_size` (50) the other methods
+   use, taken as a fixed prefix of one deterministically shuffled dev pool
+   (not a per-call `random.sample` draw) so every candidate in a run is
+   scored on exactly the same instances.
 
 3. **Output-verbosity barrier gate** — evaluation caps generation at 32 new
-   tokens for BBH, and a truncated answer is always scored wrong. Prompts that
-   induce verbose answers therefore fail for a reason unrelated to reasoning
-   quality. The barrier penalizes mean OUTPUT length (not prompt length, which
-   is what CAPO and `_v2_common` already penalize):
+   tokens for BBH and scores a truncated answer wrong regardless of
+   reasoning quality, so the barrier penalizes mean OUTPUT length (distinct
+   from the prompt-length penalty CAPO/`_v2_common` already apply):
 
        score = EM - lambda * max(0, (L_avg - L_free) / (L_cap - L_free))^3
 
@@ -39,12 +27,11 @@ method:
    only for selection.
 
 4. **Trap-task detection** — some BBH tasks are unsolvable under answer-only
-   prompting regardless of optimizer: every large model in Suzgun et al. (2023,
-   Table 3) scores ~51.6 on `web_of_lies` answer-only and 92-100 with CoT. v2
-   runs a one-sided binomial test of the best candidate against the task's
-   chance baseline and records the verdict in the audit trail. It does NOT
-   prune the task: pruning would make macro-averages incomparable against
-   methods that ran all eight tasks. Detection is reported, not acted on.
+   prompting regardless of optimizer (e.g. `web_of_lies`, per Suzgun et al.
+   2023 Table 3). v2 runs a one-sided binomial test of the best candidate
+   against the task's chance baseline and records the verdict in the audit
+   trail, but does not prune the task — pruning would make macro-averages
+   incomparable against methods that ran the full task set.
 """
 from __future__ import annotations
 
@@ -62,16 +49,10 @@ from pof.optimizers._funnel_v2_techniques import V2_TECHNIQUES, ZERO_COST_TECHNI
 
 logger = logging.getLogger(__name__)
 
-# The curated 20-operator Phase-0 pool, balanced across cost tiers so UCB1 has
-# both cheap breadth and expensive depth to arbitrate between.
-#
-#   heavy (8)  — multi-call, high-yield diagnosis/rewrite operators
-#   cheap (8)  — single-call local or recombination edits
-#   free  (4)  — zero or near-zero LLM cost
-#
-# `lamarckian` is deliberately NOT an arm: it is bootstrap-only (it ignores the
-# population and generates from raw I/O pairs), so it belongs in init, not in
-# the per-iteration arm set.
+# Curated Phase-0 pool balanced across cost tiers: heavy (8, multi-call
+# diagnosis/rewrite), cheap (8, single-call local/recombination), free (4,
+# zero/near-zero LLM cost). `lamarckian` is bootstrap-only (generates from
+# raw I/O pairs, ignores the population) so it lives in init, not here.
 _HEAVY = [
     "etgpo_taxonomy", "strago_dual", "multi_aspect_critique", "autohint",
     "ampo_branch", "facet_edit", "structured_failure_guided",
@@ -86,12 +67,9 @@ _FREE = ["grips_delete", "grips_swap", "midpoint_crossover", "format_constraint"
 
 FUNNEL_V2_POOL: List[str] = _HEAVY + _CHEAP + _FREE
 
-# --- Split used by FUNNELv3 (see `funnel_v3.py`), defined here so both
-# --- versions share one source of truth for the operator names.
-#
-# v2 itself does NOT use this split: it is pure adaptation, with all 20
-# operators as bandit arms and none guaranteed. v3 promotes the three below to
-# a static backbone run on every elite each phase, leaving 17 under UCB1.
+# Split used by FUNNELv3 (`funnel_v3.py`), defined here so both versions
+# share one source of truth. v2 itself doesn't use it — all operators are
+# bandit arms; v3 promotes the three below to a static backbone.
 STATIC_CORE: List[str] = ["strago_dual", "etgpo_taxonomy", "autohint"]
 BANDIT_POOL: List[str] = [t for t in FUNNEL_V2_POOL if t not in STATIC_CORE]
 
@@ -105,64 +83,21 @@ assert all(t in _ALL_TECHNIQUE_FNS for t in FUNNEL_V2_POOL), (
     f"{[t for t in FUNNEL_V2_POOL if t not in _ALL_TECHNIQUE_FNS]}"
 )
 
-# Fraction of the available dev split evaluated at each phase. Rising fractions
-# concentrate evaluation on the later, higher-stakes selection steps.
-#
-# The Phase-0 fraction has a floor for a reason found empirically: at 0.15 of a
-# 127-example dev split (N=19), easy tasks such as boolean_expressions saturate
-# at EM=1.000 in Phase 0. A saturated score is measurement noise rather than a
-# solved task, and it starves every failure-driven operator of input — seven of
-# the eight heavy operators no-op when the elite has no failures, collapsing the
-# pool to its cheap tier exactly when budget is most available. Starting at 0.30
-# keeps early scores off the ceiling.
-# --- Accumulating-fresh validation ---------------------------------------
-#
-# Phase k evaluates on a GROWING prefix of the optimization pool, so every
-# phase adds validation instances the search has never been selected against.
-#
-# This replaces a flat N=50, which evaluated every phase on the SAME 50
-# instances. Under that scheme a candidate surviving four phases had been
-# selected four times against one fixed sample — four rounds of overfitting
-# pressure on the same examples. The measured consequence, over 17 runs:
-#
-#   mean dev gain            +0.065   (search works: 62% of it from the phases)
-#   mean test gain           ~0.000
-#   corr(dev gain, test)     -0.695   <- runs improving most on dev did WORST
-#
-# SWIFT/APEX already guard against this by resampling a fresh minibatch every
-# phase ("because the minibatch is fresh each time, selection never overfits a
-# fixed subset"). The fixed prefix introduced here to make candidate scores
-# comparable at equal N silently removed that property; this restores it while
-# keeping comparability, because a growing prefix is still nested — all
-# candidates in a phase are scored on identical instances, and a survivor pays
-# only for the newly added ones.
-#
-# Fractions are of the optimization pool, not of dev: the held-out selection
-# slice stays untouched by the search either way.
+# Fraction of the optimization pool (not raw dev — the held-out selection
+# slice stays untouched) evaluated at each phase. Phase k evaluates on a
+# GROWING prefix, so every phase adds validation instances the search has
+# never been selected against; a flat N reused every phase let a surviving
+# candidate be selected repeatedly against the same fixed sample, and
+# measured dev/test correlation went strongly negative (runs improving most
+# on dev did worst on test). Because prefixes are nested, a survivor pays
+# only for the newly added instances, not a full re-evaluation.
 PHASE_N_FRACTIONS: List[float] = [0.25, 0.50, 0.75, 1.0]
 
-# Superseded note, kept because the reasoning still constrains the design:
-# a flat N equal to `eval_sample_size` (50) matched every other method in the
-# benchmark exactly, which is why it was chosen.
-#
-# An earlier design scaled N across phases (38/57/76/95 on a 127-example dev
-# split), on the successive-halving argument that precision matters most at the
-# final selection. Measured, that trade did not pay for itself here:
-#
-#   schedule                sample-evals   final N
-#   scaled 38/57/76/95           4,199        95
-#   flat 95                      5,225        95
-#   flat 50                      2,750        50
-#
-# Scaling was 20% cheaper than a flat 95 for identical final precision, but 53%
-# MORE expensive than the flat 50 the rest of the benchmark runs at, roughly
-# doubling wall-clock time. It also made FUNNELv2 select on 95 dev samples while
-# every method it is compared against selects on 50 — a third simultaneous
-# protocol difference (alongside the operator pool and the barrier gate), which
-# would make any observed difference hard to attribute to the thing under test.
-#
-# Flat N keeps the comparison clean. The nested-prefix pool below is retained
-# because it still guarantees every candidate is scored on an identical sample.
+# Matches `eval_sample_size` (50), the same flat N every other method in the
+# benchmark uses. A scaled schedule (38/57/76/95) was measured and found 53%
+# more expensive than flat-50 for the same final precision, and would have
+# made FUNNELv2 select on more dev samples than the methods it's compared
+# against — a confound not worth the cost.
 MIN_PHASE_N = 16
 
 # Minimum size of the held-out selection slice (see __init__).
@@ -313,20 +248,11 @@ class FUNNELv2Optimizer(BaseOptimizer):
         pool = self._order_dev_pool(pool)
 
         # Split dev into an OPTIMIZATION pool and a HELD-OUT selection slice.
-        #
-        # Measured motivation: with a flat N=50 and ~70 candidates competing,
-        # the argmax over dev reliably picks whichever prompt was luckiest on
-        # those particular 50 instances. On bbh_boolean_expressions this
-        # produced dev 0.927 +/- 0.025 but test 0.838 +/- 0.062, with a dev-test
-        # correlation of -0.46: the seed scoring HIGHEST on dev scored LOWEST on
-        # test. That is the optimizer's curse, and it worsens as the operator
-        # pool grows, because more candidates means more draws in the lottery.
-        #
-        # The held-out slice never influences the search, so the final choice
-        # among a handful of finalists is made on evidence the search could not
-        # overfit. Selection bias scales with how many things you choose
-        # between: best-of-70 on a reused sample is badly biased, best-of-6 on
-        # fresh instances is not.
+        # With many candidates competing, the argmax over the optimization
+        # pool is upward-biased toward whichever prompt got lucky on those
+        # instances (the optimizer's curse, worsening as the pool grows).
+        # The held-out slice never influences the search, so the final pick
+        # among finalists is made on evidence the search could not overfit.
         n_dev = len(pool)
         n_opt = max(
             MIN_PHASE_N,
@@ -444,20 +370,11 @@ class FUNNELv2Optimizer(BaseOptimizer):
     def _evaluate_phase(self, candidates: List[PromptRecord], phase: int) -> None:
         """Bring EVERY candidate up to this phase's sample size, then rescore.
 
-        Selection compares candidates against each other, so they must all be
-        measured on the SAME sample. Carrying a survivor's earlier small-N score
-        forward would bias selection toward incumbents: small samples have
-        higher variance, and a survivor was *selected for scoring high*, so its
-        small-N estimate is upward-biased (winner's curse). Ranking that
-        inflated estimate against an honest larger-N estimate of a new candidate
-        systematically favours the incumbent, and the population ossifies around
-        whichever candidates got lucky early.
-
-        Standard successive halving avoids this by re-running survivors at each
-        new budget. Because our phase samples are nested prefixes of one pool, a
-        survivor only needs the INCREMENT evaluated — its cached per-sample
-        results for the prefix stay valid — so correctness here costs only the
-        extra samples, not a full re-evaluation.
+        All candidates must be compared at the same N: carrying a survivor's
+        smaller-N score forward would bias selection toward incumbents
+        (winner's curse — a survivor was selected for scoring high on fewer,
+        noisier samples). Because phase samples are nested prefixes of one
+        pool, a survivor only needs its INCREMENT evaluated.
         """
         n_target = self._phase_sizes[min(phase, len(self._phase_sizes) - 1)]
         n_full, n_incr, n_cached = 0, 0, 0
@@ -594,12 +511,10 @@ class FUNNELv2Optimizer(BaseOptimizer):
 
         self._apply_static_core(candidates)
 
-        # Walk the full UCB1 ranking, not just the top-M. An operator that
-        # cannot apply right now (failure-driven operators return None when the
-        # elite has no failures on the current sample) yields its slot to the
-        # next-ranked arm rather than silently wasting it. On a healthy step
-        # this stops after `top_m_operators` arms and behaves identically to
-        # taking the top-M directly; it only backfills when arms no-op.
+        # Walk the full UCB1 ranking, not just top-M: an arm that can't apply
+        # right now (e.g. a failure-driven operator when the elite has no
+        # failures) yields its slot to the next-ranked arm instead of wasting
+        # it. Stops after `top_m_operators` arms have actually produced.
         used_arms = 0
         skipped: List[str] = []
         for name in self._select_operators():
@@ -653,24 +568,18 @@ class FUNNELv2Optimizer(BaseOptimizer):
     def _finalize(self) -> None:
         """Verify every plausible winner at the final N before one is reported.
 
-        `AuditHistory.get_best_record` returns `max(records, key=score)` over
-        the ENTIRE run, including candidates dropped in an early phase. Those
-        were scored on a small sample and never re-evaluated, so their scores
-        carry the same upward bias that motivated `_evaluate_phase`: a Phase-0
-        candidate that got lucky on 38 samples can outrank a finalist honestly
-        measured on 95 and be reported as the run's best prompt — which is then
-        what the runner sends to the held-out test evaluation.
+        `get_best_record` maxes over the entire run including candidates
+        dropped in an early phase, whose small-sample scores carry the same
+        upward bias `_evaluate_phase` corrects for — a lucky Phase-0 score
+        could otherwise outrank an honestly-measured finalist. Re-evaluating
+        contenders at the final N (nested prefixes mean each pays only its
+        increment) fixes this; iterated because promoting a leader can pull
+        a previously-lower record into contention.
 
-        Re-evaluating the top contenders at the final N removes the bias where
-        it actually matters. Nested prefixes mean each one pays only its
-        increment. Iterated, because correcting the leaders can promote a
-        previously-lower record into contention.
-
-        Called from two places: naturally, inside `_step()` when phases are
-        exhausted (before raising StopIteration), and unconditionally by
-        `BaseOptimizer.optimize()`'s `finally` block as a backstop for exit
-        paths (patience, budget exhaustion) that don't go through `_step()`'s
-        own StopIteration at all -- guarded so the second call is a no-op.
+        Called both from `_step()` when phases are exhausted and, as a
+        backstop, unconditionally from `BaseOptimizer.optimize()`'s `finally`
+        block for exit paths that skip `_step()`'s StopIteration — guarded
+        so the second call is a no-op.
         """
         if self._finalized:
             return
@@ -698,17 +607,12 @@ class FUNNELv2Optimizer(BaseOptimizer):
     def _select_on_holdout(self) -> None:
         """Pick the reported winner on data the search never saw.
 
-        The optimization pool drove every selection decision, so the argmax over
-        it is upward-biased by however many candidates competed — measured at
-        dev 0.927 +/- 0.025 against test 0.838 +/- 0.062, correlation -0.46.
-        Re-ranking a handful of finalists on the held-out slice cuts that bias
-        to best-of-K on fresh instances.
-
-        The winner is recorded on the optimizer rather than by rewriting scores:
-        `AuditHistory.get_best_record` ranks by `record.score`, and mutating
-        scores to force an outcome would corrupt the audit trail and the
-        cross-run operator statistics derived from it. `optimize` applies the
-        choice to the returned result instead.
+        The optimization-pool argmax is upward-biased by however many
+        candidates competed; re-ranking finalists on the held-out slice cuts
+        that to best-of-K on fresh instances. The winner is recorded on the
+        optimizer rather than by rewriting `record.score`, which would
+        corrupt the audit trail and the cross-run operator statistics
+        derived from it — `optimize` applies the choice to the result instead.
         """
         if not self._holdout:
             return

@@ -1,18 +1,12 @@
 """Held-out final-selection mixin — shared winner's-curse correction.
 
-Bare argmax selection over a fixed, reused dev pool is upward-biased
-regardless of per-measurement sample size, once enough candidates are
-compared (measured directly on this project: FUNNELv2Optimizer's dev
-0.927 +/- 0.025 vs. test 0.838 +/- 0.062, corr -0.46; plain APEX lost to
-the zero-search `baseline_seed` on 18/27 BBH tasks before this fix).
-
-The mechanism: reserve ~30% of dev (floor `MIN_HOLDOUT_N`) that search
-never touches; at `_finalize()`, re-rank the top `FINALIZE_TOP_K`
-dev-argmax finalists on that untouched slice exactly once, and report the
-holdout winner instead of the dev-pool argmax. Originally built for APEX
-only; factored out here so any optimizer subclassing `BaseOptimizer` can
-opt in with one `_init_holdout()` call rather than re-implementing (and
-re-debugging) the same logic per optimizer.
+Bare argmax selection over a fixed, reused dev pool is upward-biased once
+enough candidates are compared. Mechanism: reserve ~30% of dev (floor
+`MIN_HOLDOUT_N`) that search never touches; at `_finalize()`, re-rank the
+top `FINALIZE_TOP_K` dev-argmax finalists on that untouched slice exactly
+once, and report the holdout winner instead of the dev-pool argmax.
+Factored out here so any `BaseOptimizer` subclass can opt in with one
+`_init_holdout()` call.
 """
 from __future__ import annotations
 

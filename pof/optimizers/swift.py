@@ -70,12 +70,8 @@ class SWIFTOptimizer(HoldoutSelectionMixin, BaseOptimizer):
             **kwargs,
         )
         self._phase_idx = 0
-        # Held-out final-selection (on by default, ported from APEX — see
-        # pof/optimizers/holdout.py for the mechanism and rationale). SWIFT
-        # previously had no correction for dev-pool argmax's winner's-curse
-        # bias at all.
+        # See pof/optimizers/holdout.py for the mechanism/rationale.
         self._init_holdout(use_holdout_selection=use_holdout_selection)
-        # GEPA-style Pareto-frontier injection (ported from apex.py, 2026-08-18).
         # Probability that _select_top_k replaces its weakest slot with a
         # frontier-weighted candidate not already in the top-K.
         self.frontier_pull_prob = frontier_pull_prob
@@ -85,13 +81,11 @@ class SWIFTOptimizer(HoldoutSelectionMixin, BaseOptimizer):
     ) -> List[PromptRecord]:
         """Top-K selection widened by a GEPA-style Pareto frontier injection.
 
-        Ported from apex._tournament_select (2026-08-18): with probability
-        `frontier_pull_prob`, replaces the weakest slot in the top-K with a
-        frontier-sampled candidate (weighted by instance-coverage count) that
-        is not already in the selected set. Maintains population_size invariant.
-
-        Falls back to base-class pure scalar top-K when the frontier is empty
-        or fewer than 2 dev-scored candidates exist — same guard as APEX.
+        With probability `frontier_pull_prob`, replaces the weakest slot in
+        the top-K with a frontier-sampled candidate (weighted by
+        instance-coverage count) not already in the selected set. Falls back
+        to pure scalar top-K when the frontier is empty or fewer than 2
+        dev-scored candidates exist.
         """
         k = k or self.population_size
         sorted_candidates = sorted(candidates, key=rank_key, reverse=True)
@@ -182,27 +176,12 @@ class SWIFTOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         elif self._phase_idx == 2:
             return self._phase_trajectory_crossover()
         elif self._phase_idx == 3:
-            # Bug fix (2026-08-14 optimizer audit): this used to assign
-            # _phase_polish()'s return value to a local `result` and then
-            # immediately `raise StopIteration` -- base.py's optimize()
-            # loop does `new_population = self._step()` and only applies
-            # that return value in the try block, so raising StopIteration
-            # on the SAME call that produced it meant Phase 3's fully
-            # evaluated, real-LLM-cost candidates (the "Polish" phase --
-            # local edits + few-shot augmentation, full eval, described in
-            # the module docstring as the highest-fidelity phase) were
-            # generated and scored but never applied to self.population,
-            # never became best_record via _update_best(), and never got a
-            # generation-3 entry in tracker history via the normal path.
-            # They could only ever surface through HoldoutSelectionMixin's
-            # independent tracker.history scan -- meaning with holdout
-            # selection off, Phase 3 was pure wasted budget; its output
-            # could never win. Returning normally here lets base.py apply
-            # it like every other generation; the loop still terminates
-            # after generation 3 since num_iterations=3 bounds the range()
-            # in optimize() (the `else: raise StopIteration` branch below
-            # still catches any 4th+ call if max_generations ever
-            # overrides num_iterations upward).
+            # Must return normally (not raise StopIteration on this same
+            # call): optimize()'s loop only applies new_population from a
+            # normal return, so raising here would let Phase 3's fully
+            # evaluated candidates be generated and scored but never applied,
+            # never become best_record, and never win. num_iterations=3
+            # still bounds the loop, so this doesn't add an extra generation.
             return self._phase_polish()
         else:
             raise StopIteration
@@ -220,18 +199,11 @@ class SWIFTOptimizer(HoldoutSelectionMixin, BaseOptimizer):
             # if the record was somehow created without them (edge case).
             details = record.per_sample_details
             if not details and record.text:
-                # Bug fix (2026-08-14 optimizer audit): this used to call
-                # self.dataset.get_eval_samples("dev", ...) directly, which
-                # draws from the FULL dev split -- holdout slice included --
-                # bypassing _sample_dev's restriction to the search-visible
-                # opt_pool (HoldoutSelectionMixin). That leaked held-out
-                # instances into the search itself, weakening the winner's-
-                # curse correction _select_on_holdout is supposed to
-                # provide for this exact record later. Also now sets
-                # record.scores["dev"] (previously only .score was set),
-                # matching every other real full-dev eval path in the
-                # codebase -- without it, this record would be misranked as
-                # "no dev score" by rank_key() despite having a genuine one.
+                # Must use _sample_dev, not dataset.get_eval_samples directly
+                # -- the latter draws from the full dev split including the
+                # holdout slice, which HoldoutSelectionMixin needs kept
+                # unseen by the search. Also set scores["dev"] so rank_key()
+                # doesn't misrank this record as having no dev score.
                 samples = self._sample_dev(self.eval_sample_size)
                 result = self.evaluator.evaluate(record.text, samples)
                 details = result.per_sample_details
@@ -355,9 +327,8 @@ class SWIFTOptimizer(HoldoutSelectionMixin, BaseOptimizer):
 
     def _structured_improve(self, prompt: str, failures: List[Dict]) -> Optional[str]:
         """Diagnose failures then engineer an improved prompt."""
-        # Same fix as base.py's _feedback_improve: 'target' was unbounded,
-        # fine for short answers but a large JSON blob (e.g. LiveCodeBench's
-        # test_cases) can blow a meta-prompt out to millions of tokens.
+        # Truncated like base.py's _feedback_improve: 'target' can be a
+        # large JSON blob (e.g. code tasks' test cases).
         failure_text = "\n".join(
             f"- Input: {f.get('input', '')[:60]} | Expected: {str(f.get('target', ''))[:60]} | Got: {f.get('prediction', '')[:60]}"
             for f in failures[:5]

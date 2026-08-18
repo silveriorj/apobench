@@ -1,36 +1,19 @@
 """FUNNELv4d — FUNNELv4c plus batch-level Hoeffding racing for brand-new
 candidates.
 
-**The idea.** Every phase, `_evaluate_phase` pays for a full increment of
-evaluation on every candidate, including ones that are obviously going to
-lose the tournament. Racing lets a candidate's evaluation stop early once its
-running score plus a Hoeffding confidence bound can no longer reach a
-threshold — see `Evaluator.evaluate_with_batch_racing`.
+Racing lets a candidate's evaluation stop early once its running score plus
+a Hoeffding bound can no longer reach a threshold (see
+`Evaluator.evaluate_with_batch_racing`). Unlike the codebase's existing
+`evaluate_with_racing` (used by CAPO/GAAPO/GSPE/SEE), which checks the bound
+after every sample and so cannot batch generation calls, this checks between
+BATCHES, keeping full batching throughput within a batch.
 
-**Why batch-level, not the existing `evaluate_with_racing`.** That method
-already exists in the codebase (used by CAPO/GAAPO/GSPE/SEE) but checks the
-bound after every SAMPLE, which means it cannot batch generation calls at
-all. At FUNNEL's per-phase N (22-88, batch_size ~4-8) the lost batching
-throughput for candidates that do NOT get eliminated likely costs more than
-early elimination saves on the ones that do. `evaluate_with_batch_racing`
-checks the bound between BATCHES instead, keeping full batching throughput
-within a batch.
-
-**Scope: brand-new candidates only, never survivors.** Racing is applied only
-to candidates with zero prior evaluation (`have == 0` in `_evaluate_phase`'s
-terms) -- never to a survivor's incremental re-evaluation. Survivors are the
-ones equal-N comparability exists to protect; cutting a survivor's evidence
-short would reintroduce exactly the winner's-curse bias `_evaluate_phase`'s
-own docstring warns against. New candidates racing out just means the search
-stops paying to confirm what the population's current floor already implies.
-
-**Threshold and timing.** The elimination bar is the CURRENT population's
-floor score (`min(r.score for r in self.population)`) at the start of the
-phase, before this phase's new candidates are added -- i.e. what a new
-candidate needs to beat to have any chance of displacing an existing
-survivor. Only active from phase 1 onward: phase 0 (`_init_population`)
-builds `self.population` incrementally with no stable floor yet to race
-against.
+Applied only to brand-new candidates (zero prior evaluation), never to a
+survivor's incremental re-evaluation — cutting a survivor's evidence short
+would reintroduce the winner's-curse bias `_evaluate_phase` guards against.
+The elimination bar is the population's floor score at the start of the
+phase (before new candidates are added); only active from phase 1 onward,
+since phase 0 has no stable floor yet.
 """
 from __future__ import annotations
 
@@ -41,13 +24,9 @@ from pof.core.types import PromptRecord
 from pof.optimizers import register_optimizer
 from pof.optimizers.funnel_v4c import FUNNELv4cOptimizer
 
-# v4d is the best-performing FUNNEL variant measured to date (Qwen3-4B, 7
-# tasks common across the whole family): macro 0.715 vs. v4a's 0.701, v3's
-# 0.699, v2's 0.689, v1's 0.677 -- the best or tied-best on 5 of 7 tasks,
-# achieved with LESS guaranteed work per phase than v3/v4a (trimmed
-# decomposition family + batch-level racing). "FUNNEL-Lean" names that result
-# for use outside this codebase (papers, reports): best measured accuracy,
-# achieved cheaper, not despite being cheaper.
+# v4d is the best-performing FUNNEL variant measured to date, achieved with
+# less guaranteed work per phase than v3/v4a. "FUNNEL-Lean" names that result
+# for use outside this codebase (papers, reports).
 
 logger = logging.getLogger(__name__)
 
@@ -68,24 +47,13 @@ class FUNNELv4dOptimizer(FUNNELv4cOptimizer):
     def _order_dev_pool(self, pool: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """Front-load instances that look more complex into early phases.
 
-        A true discriminative-instance ordering (prioritize instances where
-        past candidates' scores disagreed most, per the "reward variance"
-        literature on prompt-overfitting) needs historical per-DEV-instance
-        correctness data. This project only persists TEST-split per-sample
-        details in result files, and dev/test are disjoint splits by
-        construction -- test-instance difficulty tells you nothing about a
-        dev instance's difficulty, so that data doesn't actually support the
-        real thing. This is a substitute that IS supportable from data
-        available up front, with no circularity: input length as a cheap
-        complexity proxy. Longer/more complex-looking inputs tend to be more
-        discriminative (more ways to get partially or fully wrong), so
-        putting them early means the accumulating-fresh schedule's early,
-        cheap phases see more of the signal that actually separates
-        candidates, rather than however a random shuffle happened to land.
-
-        Stable sort: within a length, the seeded random order set before
-        this hook runs is preserved, so this doesn't reduce the value of the
-        RNG shuffle for tasks/inputs where length carries little signal.
+        A true discriminative-instance ordering would need historical
+        per-dev-instance correctness data, which this project doesn't
+        persist (only test-split details are saved, and dev/test are
+        disjoint). Input length is used as a cheap, data-available proxy:
+        longer inputs tend to be more discriminative, so the accumulating-
+        fresh schedule's early, cheap phases see more separating signal.
+        Stable sort preserves the seeded shuffle within equal lengths.
         """
         return sorted(pool, key=lambda s: len(str(s.get("input", ""))), reverse=True)
 
@@ -167,18 +135,11 @@ class FUNNELv4dOptimizer(FUNNELv4cOptimizer):
     def _maybe_stop_if_perfect(self) -> None:
         """Stop early once the best candidate is a perfect match on dev.
 
-        Remaining phases only grow the sample the best candidate is scored on
-        (accumulating-fresh) -- if it is already at EM=1.0, there is no higher
-        score left to find; further phases would only re-confirm the same
-        result on more data at real GPU cost, which matters a lot more once
-        a "phase" is a batch of full CoT generations on an Ollama-served
-        model with no request parallelism (single-digit minutes per batch vs.
-        seconds on the HF/answer-only path this project mostly runs).
-        Checks raw EM (`scores["dev"]`), not the barrier-penalized selection
-        score, since a length penalty reducing `score` below 1.0 doesn't mean
-        there's a HIGHER-accuracy candidate still to find -- it means a
-        shorter answer might score marginally higher under the barrier, which
-        isn't what this check is for.
+        Remaining phases only grow the sample the best candidate is scored
+        on (accumulating-fresh), so EM=1.0 means no higher score is left to
+        find. Checks raw EM (`scores["dev"]`), not the barrier-penalized
+        selection score — a length penalty pulling `score` below 1.0 doesn't
+        mean a higher-accuracy candidate remains to be found.
         """
         if not self.best_record:
             return

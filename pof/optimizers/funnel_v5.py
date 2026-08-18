@@ -1,40 +1,19 @@
 """FUNNELv5 — FUNNELv4d ("FUNNEL-Lean") with eval mode as a searchable
 candidate property: answer-only, brief CoT, or full CoT/thinking.
 
-**Motivation.** Every prior FUNNEL variant fixes the eval mode (system prompt
-+ token budget) for the whole run, chosen up front by the experimenter. But
-measured results show the best mode is TASK-dependent, not something you can
-guess correctly in advance: on `boolean_expressions`, full CoT reaches
-near-perfect accuracy (0.997) versus the best answer-only result all session
-(0.887); on `causal_judgement`, full CoT is WORSE than answer-only (0.583 vs.
-0.649) -- and that reversal independently reproduces a finding already in
-Suzgun et al. (2023) Table 3, where CoT measurably hurts causal_judgement for
-much larger models too. Picking one mode per run means guessing which
-tasks look like the first case and which look like the second.
+Prior FUNNEL variants fix the eval mode (system prompt + token budget) for
+the whole run, but the best mode is task-dependent — e.g. full CoT helps
+`boolean_expressions` but hurts `causal_judgement` relative to answer-only,
+matching a reversal already reported in Suzgun et al. (2023) Table 3 for
+larger models. Rather than guess per task, eval mode becomes a heritable
+`PromptRecord` property (`metadata["mode"]`): new candidates inherit their
+parent's mode, and a guaranteed "mode family" mints zero-LLM-call siblings
+in each of the other two modes for every top elite each phase. Ordinary
+tournament selection then does the work — whichever mode scores higher on
+a given task keeps propagating, without an explicit gate.
 
-**The mechanism.** Eval mode becomes a first-class, heritable property of a
-`PromptRecord` (`metadata["mode"]` — one of "ao", "cot", "thinking"), not a
-run-level setting:
-
-- New candidates inherit their parent's mode by default (`_create_record`).
-- A guaranteed "mode family" mints, for each top elite each phase, sibling
-  candidates in whichever of the other two modes it doesn't already have a
-  sibling in — same instruction text, different eval configuration. Zero LLM
-  calls, same principle as v3's few-shot split (only the identical
-  demonstration/instruction split, generalized to eval mode).
-- Selection (equal-N tournament + the held-out final check, both inherited
-  unchanged) then does the actual work: whichever mode's siblings score
-  higher on THIS task survive and keep propagating. A task that answers this
-  quickly stops paying for the losing mode's LLM cost -- CoT/thinking siblings
-  of a clearly-losing lineage just don't get selected forward, so the
-  population converges toward whichever mode is winning without an explicit
-  gate (the same self-pruning logic v4a's adaptive gate applies explicitly,
-  happening here as an emergent property of ordinary tournament selection).
-
-**Why bypass the normal duplicate check for mode siblings.** `_is_duplicate`
-hashes only text, so a same-text sibling in a new mode would be dropped as a
-"duplicate" of the elite it was minted from -- exactly the case this family
-exists to create. Mode siblings are tracked and deduplicated on
+Mode siblings share text with their elite, so `_is_duplicate` (which hashes
+only text) would otherwise drop them; they're deduplicated on
 (text_hash, mode) instead, via `_mode_pairs_seen`.
 """
 from __future__ import annotations

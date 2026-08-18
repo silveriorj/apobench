@@ -2,29 +2,16 @@
 eval modes are worth exploring per task, adaptively corrected by real
 evidence.
 
-**The index.** From this session's FUNNEL results: on `boolean_expressions`,
-full CoT reaches 0.997 vs. 0.896 best answer-only; on `causal_judgement`,
-full CoT is WORSE than answer-only (0.583 vs. 0.649) -- and that reversal
-independently reproduces Suzgun et al. (2023) Table 3's own
-CoT-hurts-causal_judgement finding. Only 2 tasks are validated head-to-head;
-the rest are hypotheses by task-property analogy (symbolic/formal-logic
-tasks lean toward reasoning helping; judgment/pattern-recognition tasks lean
-toward answer-only winning). Unknown tasks default to exploring fully --
-the index is a cost-saving PRIOR, not a hard rule, precisely because it's
-thin.
-
-**Why adaptive, not a hard skip.** v5's mode family always mints siblings in
-every mode a candidate doesn't already have. That's correct but expensive on
-a task where CoT/thinking predictably won't pay off. v6 restricts the
-guaranteed family to answer-only siblings ONLY when BOTH: (a) the index
-predicts answer-only wins for this task, AND (b) by phase 2 the actual
-measured evidence still agrees (no CoT/thinking-mode candidate has beaten
-the best answer-only one yet). Condition (b) is what makes this
-self-correcting rather than a blind assumption baked in: if the index is
-wrong for a given seed/task, real evidence overrides it and full exploration
-resumes -- gating only ever narrows an already-losing family, the same
-principle as v4a's adaptive gate, applied to eval mode instead of the
-decomposition operator family.
+`REASONING_TASK_INDEX` below is a cost-saving prior, not a hard rule: only
+two tasks are validated head-to-head (see its entries), the rest are
+hypotheses by task-property analogy, and unknown tasks default to exploring
+fully. v5's mode family always mints siblings in every mode a candidate
+lacks; v6 restricts the guaranteed family to answer-only-only when BOTH the
+index predicts answer-only wins for this task AND, by phase
+`MIN_PHASES_BEFORE_GATING`, measured evidence still agrees. That second
+condition makes it self-correcting — a wrong index prediction is overridden
+by evidence and full exploration resumes; gating only ever narrows an
+already-losing family.
 """
 from __future__ import annotations
 
@@ -38,9 +25,9 @@ from pof.optimizers.funnel_v5 import FUNNELv5Optimizer
 logger = logging.getLogger(__name__)
 
 # task name -> whether CoT/thinking reasoning modes are worth exploring at
-# all, vs. sticking to answer-only. True/False values validated on the 2
-# tasks noted above; the rest are hypotheses, not measurements -- see the
-# module docstring. Unknown tasks default to True (explore) in __init__.
+# all, vs. sticking to answer-only. Only boolean_expressions and
+# causal_judgement are measured; the rest are hypotheses. Unknown tasks
+# default to True (explore) in __init__.
 REASONING_TASK_INDEX: Dict[str, bool] = {
     "boolean_expressions": True,       # validated: CoT 0.997 vs AO 0.896
     "dyck_languages": True,            # hypothesis: symbolic stack simulation

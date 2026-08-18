@@ -234,21 +234,14 @@ def _load_bbh(task: str, num_samples: int, seed: int, dev_test_split: float = 0.
 
     if dev_test_split > 0.0:
         # Even split mode: train takes a fixed few-shot pool, dev/test split
-        # the remainder by the requested ratio (e.g. 0.5 -> 50/50). Exists to
-        # test whether the small default dev pool (see fixed-size branch
-        # below) was starving the optimizer of statistical power -- APO gains
-        # measured on ~50-instance dev did not transfer to test (corr
-        # -0.695); a larger, evenly-sized dev pool is the direct fix.
+        # the remainder by the requested ratio (e.g. 0.5 -> 50/50).
         n_train = 8 if len(all_samples) >= 8 + 20 else 3
         pool = len(all_samples) - n_train
         n_dev = max(1, round(pool * dev_test_split))
         n_test = pool - n_dev
     elif len(all_samples) >= 8 + 50 + 115:
-        # Fixed-size splits: test is reserved first (held-out, fixed at 115),
-        # train (few-shot) takes 8, dev gets everything else (≥50 for candidate eval).
-        # BBH tasks have 187-250 examples, so dev ends up with 64-127 samples.
-        # Small tasks (e.g. penguins_in_a_table, 146 examples) shrink train to 3
-        # and the dev floor to 33 so the held-out test stays as close to 115 as possible.
+        # Fixed-size splits: test is reserved first (held out, capped at 115),
+        # train takes 8, dev gets the remainder (≥50 for candidate eval).
         n_train = 8
         n_test = min(115, max(1, len(all_samples) - n_train - 50))
         n_dev = len(all_samples) - n_test - n_train
@@ -610,15 +603,10 @@ def _load_livebench_coding(num_samples: int, seed: int) -> TaskDataset:
             "starter_code": starter_code,
             "func_name": func_name,
         })
-        # Bug found via smoke test: train samples' target gets embedded
-        # VERBATIM into few-shot exemplar prompts (base.py's format_exemplar,
-        # task_type="code" path: answer = target). Unlike HumanEval (whose
-        # train target is the short canonical solution), the full JSON blob
-        # above can carry hundreds of private test cases -- one real run hit
-        # an 8.2M-token prompt from this. LiveCodeBench's own 'solution'
-        # field is usually empty, so fall back to a short placeholder
-        # (starter_code, or a one-line stub) instead of ever putting the
-        # scoring JSON into a prompt.
+        # Train samples' target is embedded verbatim into few-shot exemplar
+        # prompts, so use a short canonical/placeholder here rather than the
+        # full test-case JSON blob (which can carry hundreds of cases and
+        # blow up prompt size).
         canonical = oj.get("solution") or ""
         if not canonical:
             canonical = (starter_code.rstrip("\n") + "\n    pass") if starter_code else "pass"
@@ -688,19 +676,10 @@ def _load_json(path: str, num_samples: int, seed: int) -> TaskDataset:
         raise DatasetError(f"Invalid JSON in {path}: {e}") from e
 
     if isinstance(data, list):
-        # Flat list — split it.
-        #
-        # Bug fix: this used to shuffle the WHOLE pool with the run seed
-        # before slicing train/dev/test, so unlike every built-in dataset
-        # (BBH/GSM8K/SVAMP/HumanEval, which all carve `test` with the fixed
-        # TEST_SPLIT_SEED so it's identical across a seed sweep), a custom
-        # JSON dataset's test set silently changed every run seed. That
-        # breaks the cross-seed comparability the fixed-seed test split
-        # exists for -- a seed sweep on a custom dataset was comparing
-        # results across genuinely different test sets without any signal
-        # that this was happening. Now: carve `test` off first with the
-        # fixed seed (same mechanism as the built-in loaders), then shuffle
-        # only the remainder with the run seed for train/dev.
+        # Flat list — split it. Test is carved off first with the fixed
+        # TEST_SPLIT_SEED (same mechanism as the built-in loaders) so it's
+        # identical across a seed sweep; only the remainder is shuffled with
+        # the run seed for train/dev.
         data = list(data)
         random.Random(TEST_SPLIT_SEED).shuffle(data)
         data = data[:num_samples]

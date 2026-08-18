@@ -1,39 +1,19 @@
 """FUNNEL — UCB1-scheduled search over a pooled top-20 operator library that
 shrinks empirically across runs.
 
-Advisor-directed experiment (2026-07-24 meeting, refined 2026-07-25): pool
-the operators that performed best across every method evaluated in this
-study, not just SWIFT/APEX's own eight (see `_funnel_techniques.py` for
-exactly how the 20 were selected and deduplicated), then reduce that
-library over time based on validated cross-run evidence rather than
-committing to a curated order up front (SWIFT) or narrowing within a
-single run's internal phases.
+Pools the best-performing operators across every method evaluated in this
+study (see `_funnel_techniques.py` for selection/dedup), then prunes that
+library over time from validated cross-run evidence rather than a curated
+order fixed up front (SWIFT) or narrowing within a single run (APEX).
 
-Two things distinguish FUNNEL from a bigger APEX, both direct responses to
-feedback that the first version got this wrong:
-
-1. **Selection is UCB1, not a hard rank cutoff.** Within a run, which
-   techniques get pulled each iteration is decided the same way APEX
-   decides it — a UCB1-style bandit over the active pool — not a
-   successive-halving schedule that permanently drops techniques based on
-   one run's noise. See `_select_operators` below; the empirical-vs-
-   canonical-UCB1 caveats from the SWIFT/APEX paper (Section 3.2 there)
-   apply identically here: `ucb_c` is tuned for this budget, not derived
-   from the regret bound, and only the top-M arms are pulled per round.
-
-2. **The library shrinks across runs, not within one.** Every run reads
-   every prior FUNNEL run's audit trail under the same experiment root
-   (`_funnel_stats.scan_technique_stats`) and only drops a technique once
-   it has accumulated enough independent observations (default n >= 40)
-   to be statistically below the pool average (default one-sided ~95%
-   confidence, `_funnel_stats.prune_techniques`). A technique tried a
-   handful of times in one run is never judged on that alone — the whole
-   point of scoping "reduction" to cross-run history is to make the
-   reduction itself a validated empirical claim, not a single-run fluke.
-   Historical means for techniques that DO have enough history also warm-
-   start this run's UCB1 priors, the same empirical-Bayes pattern used by
-   APEXv2's `HISTORICAL_ARM_STATS` — except computed live from the audit
-   trail instead of hardcoded.
+Selection within a run is UCB1 over the active pool (see `_select_operators`;
+`ucb_c` is tuned for this budget, not derived from the regret bound, and
+only the top-M arms are pulled per round). Pruning is cross-run: a
+technique is dropped only once it has accumulated enough independent
+observations (default n >= 40) to be statistically below the pool average
+(`_funnel_stats.prune_techniques`) — never judged on a single run's noise.
+Techniques with enough history also warm-start this run's UCB1 priors
+(empirical-Bayes, computed live from the audit trail).
 """
 from __future__ import annotations
 
@@ -113,11 +93,9 @@ class FUNNELOptimizer(BaseOptimizer):
             )
         logger.info(f"[FUNNEL] active library: {len(self._active_techniques)}/{len(ALL_TECHNIQUES)} techniques")
 
-        # Empirical-Bayes UCB1 warm start: `prior_pulls` pseudo-observations
-        # at each active technique's historical mean, for whichever ones
-        # have enough history to have a mean at all. Techniques with no
-        # history yet start cold (empty list -> infinite UCB value ->
-        # tried at least once before any exploitation), same as APEX v1.
+        # Warm-start: `prior_pulls` pseudo-observations at each technique's
+        # historical mean. Techniques with no history start cold (empty
+        # list -> infinite UCB value -> tried once before exploitation).
         self._operator_scores: Dict[str, List[float]] = {}
         for op in self._active_techniques:
             if op in historical:

@@ -45,11 +45,8 @@ _COT_EVAL_SYSTEM_PROMPT = (
     "(a single word, letter, or short phrase — nothing after it)."
 )
 
-# "Thinking" mode: full step-by-step reasoning, ending in \boxed{}. Unlike
-# _COT_EVAL_SYSTEM_PROMPT (brief one-line steps, "So the answer is X"), this
-# allows free-form reasoning and uses the \boxed{} convention shared with math
-# tasks. _extract_cot_answer tries \boxed{} first, so this and _score_auto's
-# MCQ/AO/text fallbacks compose without a dedicated score function.
+# "Thinking" mode: full free-form reasoning, ending in \boxed{} (shared
+# convention with math tasks; _extract_cot_answer tries \boxed{} first).
 _THINKING_EVAL_SYSTEM_PROMPT = (
     "Think through the problem step by step, then give your final answer. "
     "End your response with \\boxed{X} where X is your final answer — "
@@ -67,11 +64,9 @@ _DYCK_EVAL_SYSTEM_PROMPT = (
 )
 
 
-# task_type -> system prompt, shared between Evaluator's own default and any
-# caller that needs to route a SPECIFIC call to a different mode than the
-# instance default (see evaluate()'s system_prompt_override) -- e.g. an
-# optimizer searching across AO/CoT/thinking as a candidate-level property
-# rather than a fixed per-run setting.
+# task_type -> system prompt. Also used by callers routing a specific call to
+# a different mode than the instance default (see evaluate()'s
+# system_prompt_override).
 SYSTEM_PROMPT_BY_TASK_TYPE: Dict[str, str] = {
     "math": _MATH_EVAL_SYSTEM_PROMPT,
     "code": _CODE_EVAL_SYSTEM_PROMPT,
@@ -104,11 +99,9 @@ class Evaluator:
         self.llm = llm
         self.score_fn = score_fn or create_score_function(task_type)
         self.task_type = task_type
-        # None (default) -> auto-select by task_type, same as before. Any
-        # string (including "") -> use it verbatim, e.g. to strip the eval
-        # harness's format-enforcing system prompt entirely and isolate how
-        # much of a CoT run's score comes from that scaffolding vs. the
-        # seed prompt / model's own reasoning tendencies.
+        # None -> auto-select by task_type. Any string (including "") is
+        # used verbatim, e.g. to strip the format-enforcing system prompt
+        # entirely.
         self.system_prompt = (
             system_prompt if system_prompt is not None
             else SYSTEM_PROMPT_BY_TASK_TYPE.get(task_type, _EVAL_SYSTEM_PROMPT)
@@ -134,14 +127,10 @@ class Evaluator:
             num_samples: Max samples to evaluate (None = all).
             shuffle: Whether to shuffle samples before evaluation.
             system_prompt_override: Use this system prompt instead of the
-                instance default for this call only. For an optimizer
-                searching across eval modes (AO/CoT/thinking) as a
-                candidate-level property rather than one fixed per-run
-                setting -- see SYSTEM_PROMPT_BY_TASK_TYPE.
+                instance default for this call only (see SYSTEM_PROMPT_BY_TASK_TYPE).
             max_new_tokens_override: Use this token budget instead of the
                 instance default for this call only (pair with
-                system_prompt_override -- a CoT-style prompt needs far more
-                room than the instance's answer-only default).
+                system_prompt_override — CoT-style prompts need more room).
 
         Returns:
             EvalResult with score, performance vector, and details.
@@ -236,23 +225,13 @@ class Evaluator:
             min_samples: Minimum samples before racing kicks in.
             max_samples: Maximum samples to evaluate.
             system_prompt_override: Use this system prompt instead of the
-                instance default for this call only (parity with
-                `evaluate()`/`evaluate_with_batch_racing()` — previously
-                missing here, so any caller searching across AO/CoT/thinking
-                modes silently fell back to the instance default whenever it
-                used this method instead of the other two).
+                instance default for this call only.
             max_new_tokens_override: Use this token budget instead of the
-                instance default for this call only. Previously missing
-                here too: a CoT/thinking/math-mode Evaluator constructed
-                with the AO-mode default of 32 tokens would silently
-                truncate every generation mid-reasoning when evaluated via
-                this method, with no way to override per call.
+                instance default for this call only.
             shuffle: Whether to shuffle `samples` before racing. The
-                Hoeffding bound assumes i.i.d. sampling order; if `samples`
-                arrives pre-sorted or grouped (e.g. by sub-task/difficulty),
-                the running score used for early elimination is computed
-                over a non-representative prefix. Defaults to True, matching
-                `evaluate()`'s own default.
+                Hoeffding bound assumes i.i.d. sampling order, so a
+                pre-sorted or grouped `samples` list would otherwise bias
+                the running score used for early elimination.
 
         Returns:
             EvalResult (may be partial if racing terminated early).
@@ -334,14 +313,10 @@ class Evaluator:
     ) -> EvalResult:
         """Batched evaluation with a Hoeffding-bound early stop between batches.
 
-        `evaluate_with_racing` checks the bound after every SAMPLE, which means
-        it cannot use `_batch_generate`'s batching — one generate call per
-        sample instead of one per `batch_size` samples. At FUNNEL's per-phase N
-        (22-88) that lost batching throughput usually costs more than early
-        elimination saves. This checks the bound between BATCHES instead,
-        keeping full batching throughput within each batch while still cutting
-        off a candidate that is already statistically unlikely to reach
-        `threshold` before it pays for the remaining batches.
+        Unlike `evaluate_with_racing` (which checks the bound per sample and
+        so cannot batch generation calls), this checks between BATCHES,
+        keeping batching throughput within each batch while still cutting
+        off a candidate unlikely to reach `threshold`.
 
         Args:
             threshold: score a candidate must plausibly reach to be worth
@@ -350,11 +325,8 @@ class Evaluator:
             min_batches: batches to run before the bound check kicks in, so a
                 single unlucky first batch cannot eliminate a candidate.
         """
-        # Bug fix: the between-batch bound assumes i.i.d. batch order, same
-        # as evaluate_with_racing's per-sample bound. `samples` previously
-        # went through unshuffled, so if the caller passed a pre-sorted or
-        # grouped list, the running score at the first bound check could be
-        # computed over a non-representative prefix.
+        # The between-batch bound assumes i.i.d. batch order, so shuffle to
+        # avoid biasing the running score if samples arrive pre-sorted.
         samples = list(samples)
         random.shuffle(samples)
         system_prompt = system_prompt_override if system_prompt_override is not None else self.system_prompt
@@ -438,15 +410,11 @@ class Evaluator:
         config: GenerationConfig,
         system_prompt: Optional[str],
     ) -> List[str]:
-        """LM-Assertion-style hard constraint: an eval call must produce SOME
-        answer. Retry just the empty ones once, with the violation appended.
+        """Retry empty predictions once with a note about the violation.
 
-        Motivated by a real failure observed this session: a reasoning model
-        under a tight token budget spent its whole budget "thinking" and
-        returned an empty answer field -- not wrong, just absent, which
-        `score_fn` scores identically to any other wrong answer even though
-        it's a distinct failure mode (format/budget violation, not a
-        reasoning error) that a one-line correction can often fix.
+        A reasoning model under a tight token budget can spend it all
+        "thinking" and return an empty answer — a distinct failure mode
+        from a wrong-but-present answer, and one a retry can often fix.
         """
         empty_idx = [i for i, p in enumerate(predictions) if not (p or "").strip()]
         if not empty_idx:

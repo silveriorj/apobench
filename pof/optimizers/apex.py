@@ -45,17 +45,9 @@ _FORMAT_CONSTRAINT_MARKER = "\n\nAnswer with ONLY the final answer"
 def _strip_appended_block(text: str, marker: str) -> str:
     """Remove a previously-appended `marker`-prefixed block from `text`.
 
-    Bug fix (2026-08-14 optimizer audit): the original idempotency strip
-    used `text.split(marker, 1)[0]`, which keeps everything BEFORE the
-    first occurrence of `marker` -- discarding not just this operator's own
-    block but also anything appended AFTER it, e.g. if `_op_few_shot` ran,
-    then `_op_format_constraint` ran (appending its block after the
-    examples), then `_op_few_shot` ran again on the same elite: the second
-    few-shot strip would drop the format-constraint block too, silently
-    regressing the record and misattributing the loss to few-shot's reward.
-    Stops at the next KNOWN marker (or end-of-string) instead of
-    end-of-string only, so a differently-ordered block from the other
-    operator survives.
+    Stops at the next known marker (or end-of-string), not just at
+    end-of-string, so a block from the other operator appended after this
+    one is preserved rather than stripped along with it.
     """
     other_markers = [m for m in (_FEW_SHOT_MARKER, _FORMAT_CONSTRAINT_MARKER) if m != marker]
     boundary = "|".join(re.escape(m) for m in other_markers)
@@ -102,24 +94,20 @@ class APEXOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         ]
         self.candidates_per_operator = candidates_per_operator
         self.ucb_c = ucb_c
-        # Probability that a tournament bout's non-elite draw includes a
-        # candidate pulled from the Pareto frontier (weighted by instance
-        # coverage) instead of an unweighted random draw from the full
-        # pool -- see _tournament_select's docstring / pareto_frontier_coverage.
+        # Probability a tournament bout's non-elite draw comes from the
+        # Pareto frontier (weighted by instance coverage) instead of a plain
+        # random draw from the full pool.
         self.frontier_pull_prob = frontier_pull_prob
         self._operator_scores: Dict[str, List[float]] = {}
-        # Must match the `slack` passed to _evaluate_with_minibatch_gate below
-        # (base.py's own default is 0.10; kept explicit here, not implicit,
-        # because _step's reward computation for gate-rejected candidates
-        # depends on this exact value -- see _step's docstring).
+        # Must match the `slack` passed to _evaluate_with_minibatch_gate
+        # below; _step's reward computation for gate-rejected candidates
+        # depends on this exact value.
         self.gate_slack = 0.10
 
-        # Held-out final-selection (on by default). Reserves ~30% of dev
-        # (floor HoldoutSelectionMixin.MIN_HOLDOUT_N) that the search never
-        # touches; used exactly once at _finalize() to re-rank the top
-        # FINALIZE_TOP_K finalists and report the holdout winner instead of
-        # the (upward-biased) dev-pool argmax. See pof/optimizers/holdout.py
-        # for the mechanism and rationale.
+        # See pof/optimizers/holdout.py for the mechanism: reserves ~30% of
+        # dev that search never touches, used once at _finalize() to re-rank
+        # finalists and report the holdout winner instead of the
+        # upward-biased dev-pool argmax.
         self._init_holdout(use_holdout_selection=use_holdout_selection)
 
     def _init_population(self) -> List[PromptRecord]:
@@ -155,53 +143,19 @@ class APEXOptimizer(HoldoutSelectionMixin, BaseOptimizer):
     def _step(self) -> List[PromptRecord]:
         """Adaptive step: UCB1-select operators and apply them.
 
-        Credit assignment history, most recent fix first (kept here because
-        each round's reasoning explains why the previous round's fix was
-        not yet sufficient):
+        Reward is computed against one shared reference point per
+        generation (mean full-dev score of the current elite pool), not
+        each candidate's own parent score -- operators draw parents from
+        structurally different strata (e.g. `_op_trajectory` uses the whole
+        population, `_op_semantic_variation` only the best record), so a
+        per-parent baseline would credit arms against unequal bars. A pull
+        is scored in strictly decreasing order: gate-passed candidate gets
+        real improvement (full-dev score minus elite baseline); gate-
+        rejected candidate gets a fixed penalty of -self.gate_slack; a pull
+        producing nothing usable gets 0.0 -- so "did nothing" never
+        outranks "tried and got a rejected result".
 
-        Round 2 (current). The round-1 improvement-based reward introduced
-        two new problems, both found by review before any run used it: (a)
-        it based each candidate's baseline on its OWN recorded parent(s)'
-        score, but different operators draw parents from structurally
-        different strata -- `_op_semantic_variation` always uses the single
-        best record, `_op_trajectory` uses the WHOLE population (including
-        its worst members) -- so trajectory was credited against a
-        systematically easier bar than every other arm, for bookkeeping
-        reasons unrelated to candidate quality; and (b) it subtracted a
-        gate-rejected candidate's 16-item MINIBATCH score from a parent's
-        full-DEV score, mixing two measurement scales with very different
-        noise, and a pull producing nothing at all was credited exactly
-        0.0 -- which, once rejected pulls could land anywhere from -1 to 0,
-        made "produce nothing" rank ABOVE "produce a real but subpar
-        candidate" more often than not, an incentive that punishes trying.
-
-        Round 2's fix: (a) every reward is now computed against ONE shared
-        reference point per generation -- the mean full-dev score of the
-        current elite pool (population[:4], the same pool `_op_crossover`
-        itself draws two parents from) -- not each candidate's own
-        recorded parent(s). `parent_ids` is untouched and still records
-        real per-operator lineage for the audit trail; it is simply no
-        longer used to compute the reward baseline. (b) A pull is now
-        scored one of three ways, in strictly decreasing order, so "did
-        nothing" can never rank above "tried and got a rejected result":
-        gate-PASSED candidate -> real improvement (full-dev score minus
-        the elite baseline, comparable scale on both sides); gate-REJECTED
-        candidate -> a fixed penalty of -self.gate_slack (worse than doing
-        nothing, but bounded rather than an arbitrary noisy difference of
-        incomparable scales); pull produced NOTHING usable -> 0.0 (neutral,
-        still counted as a pull, never silently dropped).
-
-        Round 1 (superseded, described for context only). Round 1 replaced
-        crediting each arm with a candidate's ABSOLUTE score with crediting
-        fitness improvement, because every operator drew parents from the
-        same elite pool, so absolute scores clustered within a narrow band
-        while the c=0.5 exploration bonus spanned several times that band
-        -- arm ranking tracked pull count almost exclusively, regardless of
-        reward. That diagnosis was correct; round 1's specific
-        implementation of "improvement" was not yet right, per above.
-
-        Pull counting (unaffected by either round above, still correct):
-        each pull's outcome is tracked regardless of whether it produced a
+        Each pull's outcome is tracked regardless of whether it produced a
         usable candidate, so a duplicate-prone or deterministic operator's
         pull count cannot freeze while `total_pulls` keeps growing.
         """
@@ -237,10 +191,8 @@ class APEXOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         baseline = self.best_record.score if self.best_record else 0.0
         self._evaluate_with_minibatch_gate(new_candidates, baseline, slack=self.gate_slack)
 
-        # Shared reward baseline for this generation: the mean full-dev
-        # score of the current elite pool. One reference point for every
-        # arm, rather than each candidate's own (structurally unequal)
-        # parent(s) -- see _step's docstring, "Round 2".
+        # Shared reward baseline for this generation: mean full-dev score
+        # of the current elite pool, one reference point for every arm.
         elite_pool = self.population[:4] if self.population else []
         elite_baseline = (
             sum(r.score for r in elite_pool) / len(elite_pool)
@@ -261,71 +213,35 @@ class APEXOptimizer(HoldoutSelectionMixin, BaseOptimizer):
                     reward = 0.0
                 self._operator_scores.setdefault(op_name, []).append(reward)
 
-        # Tournament selection with elitism, then re-sort: several operators
-        # index self.population[:k] as "the current elites", which only
-        # holds if the population is rank-ordered. Tournament selection
-        # previously returned the elite followed by winners in draw order,
-        # not score order, so that assumption broke from generation 2 on.
-        #
-        # Bug fix (2026-08-14 optimizer audit): this sort, and
-        # _tournament_select's own sort/winner comparisons, used raw
-        # `.score` -- reintroducing the exact score-scale-mixing bug
-        # rank_key() (pof/core/types.py) was built to fix, in the ONE place
-        # that most determines whether generations actually improve. A
-        # gate-rejected candidate's noisy 16-sample minibatch score
-        # (base.py's minibatch gate) could outrank a genuine 50-sample
-        # dev-scored candidate, win its tournament bout, become the
-        # unconditionally-preserved elite (population[0]) and thus the sole
-        # parent for _op_semantic_variation, land in population[:3]/[:4]
-        # (the parent pool for most other operators), and pollute
-        # elite_baseline (the shared reward reference every bandit arm is
-        # scored against that generation) -- all while never having
-        # received a real full-dev evaluation. rank_key() was already
-        # applied to _init_population's selection (base.py) and best_record
-        # reporting, but not to this per-generation path, which is what
-        # actually drives search from generation 1 onward.
+        # Several operators index self.population[:k] as "the current
+        # elites", which requires the population to be rank-ordered by
+        # rank_key (not raw .score, which mixes minibatch- and full-dev-
+        # scale scores) -- re-sort after tournament selection to preserve
+        # that invariant.
         selected = self._tournament_select(candidates)
         selected.sort(key=rank_key, reverse=True)
         return selected
 
     # Minimum pulls an operator must accumulate before it can be excluded
-    # from a generation's selected set on UCB rank alone -- see
-    # _select_operators's docstring for the bug this guards against.
-    #
-    # Bug fix (2026-08-14 optimizer audit): was 2, equal to
-    # candidates_per_operator's own default of 2 -- since generation 1
-    # force-includes every operator (total_pulls == 0 branch) and pulls
-    # each candidates_per_operator times, every operator already sits AT
-    # this floor by the end of generation 1. From generation 2 onward the
-    # UCB1 guarantee this constant exists to protect was already vacuous:
-    # selection dropped straight to top-4-by-UCB exploitation off a mean of
-    # just 2 (single-LLM-sample-scale) reward draws per arm, so one bad
-    # early pull could still exclude an operator for the rest of the run.
-    # Doubled to require 2 full generations' worth of pulls before an
-    # operator can be dropped on rank alone.
+    # from a generation's selected set on UCB rank alone. Must exceed
+    # candidates_per_operator's default (2): otherwise every operator sits
+    # at the floor after generation 1 and one bad early pull can exclude
+    # an operator for the rest of the run.
     MIN_OPERATOR_PULLS = 4
 
     def _select_operators(self) -> List[tuple]:
         """UCB1 bandit over operators (cf. ProTeGi's bandit selection).
 
         value = mean(rewards) + c * sqrt(ln(total_pulls) / pulls_i), where
-        `rewards` are fitness-improvement values (can be negative) rather
-        than absolute scores -- see _step's docstring for why. Unpulled
-        operators have infinite value, so every operator is tried before any
-        is repeated — no premature greedy lock-in.
+        `rewards` are fitness-improvement values (can be negative), not
+        absolute scores. Unpulled operators have infinite value, so every
+        operator is tried before any is repeated.
 
-        Bug fix: this used to hard-cut to the top 4 of 7 operators by UCB
-        score every generation (`scored[:4]`). Standard UCB1's regret bound
-        relies on every arm eventually being pulled again to correct a bad
-        early estimate; permanently excluding the bottom 3 the moment they
-        rank low breaks that guarantee outright -- an operator that got one
-        unlucky early pull could never be sampled again to correct it, no
-        matter how good it might actually be. The fix: any operator with
-        fewer than `MIN_OPERATOR_PULLS` recorded pulls is force-included
-        regardless of its current UCB rank (this also naturally covers the
-        cold-start case, since unpulled operators already show up first via
-        their infinite UCB value); once every operator clears that floor,
-        selection reduces to the original top-4-by-UCB exploitation.
+        Any operator with fewer than `MIN_OPERATOR_PULLS` recorded pulls is
+        force-included regardless of UCB rank, preserving UCB1's regret
+        bound (which requires every arm to remain eventually re-pullable);
+        once every operator clears that floor, selection reduces to
+        top-4-by-UCB exploitation.
         """
         all_operators = [
             ("expert_refine", self._op_expert_refine),
@@ -367,26 +283,14 @@ class APEXOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         """Tournament selection with elitism, widened by a GEPA-style
         Pareto frontier so the parent pool isn't purely scalar top-K.
 
-        2026-08-17: added per Dissertacao/apo_literature_survey.md §1 (GEPA,
-        Agrawal et al. 2025, arXiv:2507.19457) -- our own audit flagged that
-        most operators only ever draw parents from population[:3]/[:4],
-        which risks premature convergence: a candidate that's uniquely
-        strong on a handful of hard dev instances but middling on average
-        gets crowded out by whichever candidate has the best mean, even
-        though crossing it with the generalist could combine complementary
-        strengths. `pareto_frontier_coverage` (pof/core/types.py) identifies
-        candidates that are the best-or-tied-best scorer on at least one dev
-        instance; this method biases tournament draws toward that set,
-        weighted by how many instances each frontier member uniquely covers,
-        without removing the existing scalar elitism (population[0] is still
-        always the rank_key-best record) or the existing random tournament
-        draw (which still runs every time -- the frontier pull is an EXTRA
-        candidate added to some bouts, not a replacement).
-
-        Falls back to the previous pure-scalar tournament whenever the
-        frontier is empty or degenerate (fewer than 2 dev-scored candidates
-        this generation, e.g. generation 1 before any full-dev evals exist)
-        -- see pareto_frontier_coverage's docstring for exactly when that is.
+        `pareto_frontier_coverage` (pof/core/types.py, cf. GEPA, Agrawal et
+        al. 2025, arXiv:2507.19457) identifies candidates that are the
+        best-or-tied-best scorer on at least one dev instance; draws are
+        biased toward that set (weighted by unique instance coverage) as an
+        extra candidate added to some bouts, without replacing the existing
+        scalar elitism (population[0] is always the rank_key-best record)
+        or the random tournament draw. Falls back to a pure-scalar
+        tournament when the frontier is empty or degenerate.
         """
         sorted_candidates = sorted(candidates, key=rank_key, reverse=True)
         selected = [sorted_candidates[0]]
@@ -465,10 +369,9 @@ class APEXOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         Full instructions (not truncated fragments) plus task exemplars in
         the meta-prompt, per Yang et al. 2023's ablations. Conditioned on
         the whole population rather than a single parent, so all current
-        population members are recorded as this candidate's parents for
-        the audit-trail genealogy. (This no longer affects credit
-        assignment, which uses one shared elite-pool baseline for every
-        arm regardless of recorded parent_ids -- see _step's docstring.)
+        population members are recorded as this candidate's parents in the
+        audit-trail genealogy (credit assignment itself uses a shared
+        elite-pool baseline, independent of parent_ids).
         """
         context = "\n".join(
             f"Score: {r.score:.3f}\nInstruction: {r.text}\n"
@@ -512,15 +415,10 @@ class APEXOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         examples = "\n\n".join(
             format_exemplar(self.evaluator, s) for s in shots
         )
-        # Idempotent: strip any demonstration block this operator already
-        # appended in an earlier generation before attaching new ones, so
-        # demonstrations replace rather than accumulate without bound on a
-        # record re-selected as an elite across generations. (Previously
-        # this did not strip, which is a plausible cause of APEX's
-        # anomalously high token cost relative to every compared method.)
-        # Uses _strip_appended_block (not a plain split) so a
-        # format_constraint block appended after this one survives -- see
-        # that helper's docstring for the bug this avoids.
+        # Strip any demonstration block already appended in an earlier
+        # generation before attaching new ones, so demonstrations replace
+        # rather than accumulate unbounded on a record re-selected as an
+        # elite across generations.
         base_text = _strip_appended_block(record.text, _FEW_SHOT_MARKER)
         return [(f"{base_text}{_FEW_SHOT_MARKER}{examples}", [record.id])]
 
@@ -533,12 +431,10 @@ class APEXOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         record = random.choice(self.population[:3]) if self.population else None
         if not record:
             return []
-        # A fixed seed here made this operator's output deterministic across
-        # calls; once its output was generated once it would be rejected by
-        # hash-dedup on every subsequent pull, freezing its true pull count
-        # while `total_pulls` kept growing -- letting its UCB index climb
-        # without bound while it contributed no candidates. Randomizing the
-        # sample matches _op_few_shot's pattern and fixes this.
+        # Random seed (matches _op_few_shot's pattern): a fixed seed would
+        # make output deterministic, so after the first pull hash-dedup
+        # would reject every repeat, freezing its true pull count while
+        # total_pulls keeps growing.
         targets = [
             s["target"] for s in
             self.dataset.get_few_shot_examples(n=4, seed=random.randint(0, 10**6))

@@ -15,12 +15,9 @@ from pof.llm.base import BaseLLM
 logger = logging.getLogger(__name__)
 
 # Retry policy for rate-limit (429) and transient server errors (5xx).
-# Gemini's OpenAI-compat endpoint returns 429 both for genuine per-minute
-# rate limits (recoverable in seconds) and for exhausted prepay credits
-# (never recoverable by waiting) -- the retry loop can't tell those apart
-# from the exception alone, so it always backs off and retries; a
-# credits-exhausted account will just exhaust MAX_RETRIES and surface the
-# real error instead of retrying forever.
+# 429 can also mean exhausted prepay credits, which retries won't fix — but
+# the loop can't distinguish that from the exception alone, so it always
+# backs off and eventually surfaces the real error after MAX_RETRIES.
 _MAX_RETRIES = 6
 _BASE_DELAY = 2.0  # seconds, doubles each retry
 _MAX_DELAY = 60.0
@@ -55,11 +52,8 @@ class OpenAILLM(BaseLLM):
             import openai
 
             client_kwargs: Dict[str, Any] = {
-                # The SDK's own built-in retry (default 2) fires INSIDE our
-                # retry loop's sleep window on 429/5xx, adding extra
-                # immediate requests that compound the burst instead of
-                # respecting our backoff. generate()'s loop is the only
-                # retry policy that should apply.
+                # Disable the SDK's own retry — generate()'s loop is the
+                # only retry policy that should apply.
                 "max_retries": 0,
             }
             if self._api_key:

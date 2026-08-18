@@ -105,18 +105,12 @@ def rank_key(record: "PromptRecord") -> tuple:
     """Sort/max key that ranks any dev-scored record above any record that
     only has a minibatch-gate score, then breaks ties by score.
 
-    Bug this fixes (found via the 2026-08-14 optimizer audit): gate-rejected
-    candidates keep `.score` set to a 16-sample minibatch score (high
-    variance) while gate-passed candidates get a 50-sample (or configured
-    `eval_sample_size`) full-dev score (`_evaluate_with_minibatch_gate`,
-    pof/optimizers/base.py) -- both were being sorted together on raw
-    `.score`, letting a noisy small-sample fluke outrank a true best
-    candidate and get promoted into the population/best_record/future-gen
-    parent pool. `"dev" in record.scores` is only ever set when a real
-    full-dev (or racing/full) evaluation happened -- never for a
-    gate-rejected minibatch-only record -- so gating on it first restores a
-    correct, single-scale ranking. Ties within the same tier still break on
-    `.score` as before.
+    Gate-rejected candidates carry a high-variance minibatch-only `.score`,
+    while gate-passed candidates carry a full-dev score on a different
+    scale — sorting on raw `.score` alone lets a noisy small-sample fluke
+    outrank a true best candidate. `"dev" in record.scores` is only set
+    after a real full-dev evaluation, so gating on it first keeps the two
+    scales from being compared directly.
     """
     return ("dev" in record.scores, record.score)
 
@@ -132,27 +126,19 @@ def pareto_frontier_coverage(records: List["PromptRecord"]) -> Dict[str, int]:
     Outperform Reinforcement Learning" (arXiv:2507.19457). GEPA keeps a
     candidate alive if it's uniquely (or jointly) best on any single
     training instance, even with a lower aggregate score than the current
-    generalist -- preventing a locally-strong-but-narrow candidate from
-    being crowded out purely by mean-score ranking. Surfaced in this
-    project's 2026-08-16 literature survey (`Dissertacao/apo_literature_survey.md`
-    §1) as the single most directly transplantable fix for the
-    narrow-parent-pool premature-convergence risk our own audit flagged
-    (most operators only ever draw parents from population[:3]/[:4]).
+    generalist, preventing a locally-strong-but-narrow candidate from being
+    crowded out purely by mean-score ranking.
 
-    Only records with `"dev" in record.scores` are eligible: their
-    `performance_vector` is scored against the fixed eval_sample_size dev
-    slice (`BaseOptimizer._sample_dev`'s `seed=42` default is unconditional,
-    so the same ordered sample set backs every full-dev evaluation in a
-    run), which is what makes per-instance-index comparison valid across
-    candidates from different generations. Gate-rejected candidates carry a
-    minibatch-only vector scored against a freshly random subset each pull
-    and are not index-comparable, so they're excluded here even if they
-    happen to have a non-empty performance_vector.
+    Only records with `"dev" in record.scores` are eligible, since their
+    `performance_vector` is indexed against the same fixed dev sample
+    ordering across a run, making per-instance comparison valid. Gate-
+    rejected candidates carry a minibatch-only vector scored against a
+    fresh random subset each time and are not index-comparable, so they're
+    excluded even with a non-empty performance_vector.
 
     An instance where every eligible record scored 0 contributes no winner
-    (nobody to credit as "the one who solved this") -- that would otherwise
-    put every eligible record on the frontier for that instance and defeat
-    the purpose of the mechanism.
+    — otherwise every eligible record would land on the frontier for that
+    instance, defeating the purpose of the mechanism.
     """
     eligible = [r for r in records if "dev" in r.scores and r.performance_vector]
     if len(eligible) < 2:

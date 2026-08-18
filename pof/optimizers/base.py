@@ -46,18 +46,10 @@ _IMPROVE_SYSTEM_PROMPT = (
 )
 
 # Shared addition to the failure-review meta-prompts (base.py's
-# _feedback_improve, used by apex's failure_guided operator; swift.py's
-# _structured_improve, used by SWIFT's own failure-guided phase and
-# swift_v2's second pass). Added 2026-08-15 after inspecting real winning
-# prompts from a BBH strip run: the search had independently discovered
-# this exact distinction on its own (formal_fallacies' winner explicitly
-# tells the model not to key off the phrase "perfectly valid argument" and
-# to judge actual logical structure instead) -- this instruction makes
-# that a standing part of the diagnostic step instead of leaving it to
-# chance, so failure review reliably separates "the model is reasoning
-# wrong" from "the model is reasoning fine but the output shape or a
-# surface shortcut is the real problem," and fixes the one that's
-# actually broken rather than always reaching for more reasoning guidance.
+# _feedback_improve and swift.py's _structured_improve): separates "the
+# model is reasoning wrong" from "the reasoning is fine but the format or
+# a surface shortcut is the real problem," so the fix targets the actual
+# cause instead of defaulting to more reasoning guidance.
 _FAILURE_DIAGNOSIS_CHECKLIST = (
     "When diagnosing, first classify the failure: (a) the reasoning/logic "
     "itself is wrong or missing task-relevant steps, or (b) the reasoning "
@@ -75,18 +67,10 @@ _FAILURE_DIAGNOSIS_CHECKLIST = (
 def format_exemplar(evaluator: Any, sample: Dict[str, str], max_input: Optional[int] = None) -> str:
     """Render one few-shot demonstration in the OUTPUT FORMAT the scorer expects.
 
-    Every optimizer previously wrote demonstrations as `Input: X / Output: (B)`
-    regardless of task, while the evaluator's system prompt demands a specific
-    shape — JSON for BBH, "The answer is X" for math, raw code for HumanEval.
-    A prompt therefore showed the model one answer format while instructing it
-    to produce another, and the model splits the difference: measured on
-    bbh_boolean_expressions, literal `A: False` exemplars scored 0.7652 against
-    0.8435 for the identical exemplars written as `{"answer": "False"}` — a
-    7.8-point loss caused purely by the mismatch.
-
-    Aligning the demonstration with the required output removes that. The gain
-    is task-dependent (it helped 4 of 8 BBH tasks, mean +0.010), so this is a
-    correctness fix rather than a uniform improvement.
+    Demonstrations must match the evaluator's required answer shape (JSON for
+    BBH, "The answer is X" for math, raw code for HumanEval) — a mismatched
+    format measurably hurts accuracy since the model splits the difference
+    between what it's shown and what it's told to produce.
     """
     text = str(sample.get("input", ""))
     if max_input:
@@ -133,10 +117,9 @@ class BaseOptimizer(ABC):
         self.seed_prompt = seed_prompt
         self.eval_sample_size = eval_sample_size
         self.kwargs = kwargs
-        # Guards _finalize() against a double call: FUNNELv2's own _step()
-        # calls it before raising StopIteration on natural phase exhaustion,
-        # but optimize()'s other exit paths (patience, budget) previously
-        # skipped it entirely -- see _finalize()'s docstring.
+        # Guards _finalize() against a double call: a subclass's _step() may
+        # call it directly before raising StopIteration, and optimize()'s
+        # finally block also calls it unconditionally — see _finalize().
         self._finalized: bool = False
 
         # Audit tracker
@@ -190,12 +173,10 @@ class BaseOptimizer(ABC):
             no_improve = 0
 
             for i in range(effective_iters):
-                # Global budget stop check. Uses should_stop_for_search(),
-                # not should_stop(), so a fixed slice of the time budget is
-                # always left over for _finalize() (e.g. holdout
-                # re-ranking) below -- otherwise a search that runs to the
-                # true budget edge starves _finalize() of any time to run,
-                # silently falling back to uncorrected selection.
+                # should_stop_for_search(), not should_stop(): reserves a
+                # slice of the time budget for _finalize() (e.g. holdout
+                # re-ranking) so it never runs out of time to correct
+                # selection at the end.
                 stop_reason = budget_mgr.should_stop_for_search() if budget_mgr else None
                 if stop_reason is not None:
                     logger.info(
@@ -239,16 +220,11 @@ class BaseOptimizer(ABC):
             logger.error(f"Optimization failed: {e}", exc_info=True)
             raise
         finally:
-            # Bug fix (2026-07-29): every exit path used to reach this point
-            # EXCEPT the StopIteration one (natural phase exhaustion), which
-            # is the only one that previously ran a subclass's _finalize().
-            # Patience-based and budget-exhaustion stops skipped it entirely,
-            # meaning FUNNELv2+'s held-out selection correction -- built
-            # specifically to counter a measured winner's-curse bias between
-            # dev and test scores -- silently never ran for any run that
-            # stopped that way. _finalize() is a no-op by default and guarded
-            # by self._finalized, so calling it here is always safe whether
-            # or not a subclass's _step() already called it.
+            # Must run regardless of which exit path was taken (natural
+            # exhaustion, patience, or budget), since held-out selection
+            # correction depends on it. No-op by default and guarded by
+            # self._finalized, so this is safe even if a subclass's _step()
+            # already called it.
             if not self._finalized:
                 try:
                     self._finalize()
@@ -285,12 +261,11 @@ class BaseOptimizer(ABC):
 
     def _finalize(self) -> None:
         """Called exactly once, right before the result is built, regardless
-        of why the optimization loop stopped (phase exhaustion, patience,
-        budget exhaustion). No-op here; FUNNELv2+ overrides it to run held-out
-        selection. Guard with `if self._finalized: return` / set
-        `self._finalized = True` if overriding and calling this from more
-        than one place (see FUNNELv2Optimizer._finalize for the pattern) --
-        `optimize()`'s own call already checks the flag before calling.
+        of why the optimization loop stopped. No-op here; subclasses override
+        it to run held-out selection. If calling this from more than one
+        place, guard with `if self._finalized: return` and set
+        `self._finalized = True` (optimize()'s own call already checks the
+        flag before calling).
         """
         pass
 
@@ -299,16 +274,11 @@ class BaseOptimizer(ABC):
         `threshold`. Not called automatically -- a subclass opts in by
         calling this at the top of its own `_step()`.
 
-        Motivated by SWIFT reaching a perfect dev score in `_init_population`
-        (Gen 0, before any optimization operator even ran) and then still
-        grinding through its full fixed Phase 1/2/3 schedule for 2 more hours
-        with zero possible improvement, until the external time budget cut it
-        off mid-Phase-3 -- the same waste FUNNELv2+'s `_maybe_stop_if_perfect`
-        (funnel_v4d.py) was built to avoid, generalized here for any
-        optimizer whose `.score` is a plain accuracy fraction with no
-        barrier-penalty or other non-monotonic scoring quirk (FUNNEL
-        subclasses check their own `scores["dev"]` instead, since `.score`
-        there can be barrier-penalized below the true EM).
+        Avoids grinding through remaining phases with zero possible
+        improvement once a perfect dev score is reached. Assumes `.score` is
+        a plain accuracy fraction; optimizers whose score can be
+        barrier-penalized below the true EM (e.g. FUNNEL) should check their
+        own `scores["dev"]` instead.
         """
         if self.best_record and self.best_record.score >= threshold:
             note = (
@@ -325,28 +295,22 @@ class BaseOptimizer(ABC):
         """Sample dev-set instances for candidate evaluation.
 
         Draws from `self.dataset`'s full dev split by default. Subclasses
-        that reserve a held-out selection slice (e.g. an optimizer using
-        `HoldoutSelectionMixin`) override this to sample only from the
-        search-visible portion, keeping the held-out slice genuinely unseen
-        by every operator/gate/population eval -- otherwise the final
-        `_select_on_holdout` re-ranking would be picking among finalists on
-        data the search had already touched, defeating the point.
+        reserving a held-out selection slice (e.g. `HoldoutSelectionMixin`)
+        override this to sample only the search-visible portion — the
+        held-out slice must stay unseen by every operator/gate/population
+        eval or the final holdout re-ranking loses its purpose.
         """
         return self.dataset.get_eval_samples("dev", n=n, seed=seed)
 
     def _get_budget_mgr(self) -> Optional[Any]:
-        """Fetch the attached BudgetManager, if any (mirrors optimize()'s
-        own lookup so eval helpers can record durations / check the
-        mid-generation reserve without duplicating the getattr dance)."""
+        """Fetch the attached BudgetManager, if any."""
         get_budget = getattr(self.llm, "get_budget", None)
         return get_budget() if callable(get_budget) else None
 
     def _timed_evaluate(self, prompt: str, samples: List[Dict[str, str]]) -> EvalResult:
-        """self.evaluator.evaluate(), timed, feeding the observed duration
-        to the budget manager's rolling average (see BudgetManager.
-        record_eval_duration) so remaining_search_time()'s finalize reserve
-        can adapt to how slow evaluation actually is on this task, and
-        has_time_for_another_eval() has real data to check against."""
+        """self.evaluator.evaluate(), timed, feeding the observed duration to
+        the budget manager's rolling average so its time-remaining estimates
+        adapt to how slow evaluation actually is on this task."""
         budget_mgr = self._get_budget_mgr()
         start = time.time()
         result = self.evaluator.evaluate(prompt, samples)
@@ -408,46 +372,19 @@ class BaseOptimizer(ABC):
         Rejected candidates keep their minibatch score (they rank low and
         drop out at selection) and are marked in metadata for the audit.
 
-        Bug fix (2026-08-15, found via the BBH v2-strip validation run):
-        the per-generation budget check (should_stop_for_search(), in
-        optimize()'s loop) only runs once BEFORE a generation starts -- a
-        single generation with several gate-passed candidates, each
-        needing a full-dev eval, could still consume the ENTIRE finalize
-        reserve on its own before the next check ever ran (observed: 3 of
-        5 BBH tasks in one run hit BudgetExceeded during _finalize()
-        despite the 2026-08-13 reserve fix). Now checks
-        has_time_for_another_eval() before EACH full-dev eval in this
-        loop -- once time is short, remaining gate-passed candidates are
-        skipped (kept at their minibatch score, flagged in metadata) rather
-        than evaluated regardless of cost, so a generation can bail
-        mid-list instead of only being caught at its own end.
+        Checks has_time_for_another_eval() before EACH Stage-2 eval (not
+        just once per generation) so a generation with many gate-passed
+        candidates can bail mid-list instead of exhausting the whole
+        finalize time reserve on its own.
 
-        Cost/speed improvement (2026-08-15, SOTA-APO research pass): the
-        Stage-2 full-dev eval now runs via evaluate_with_batch_racing
-        (Hoeffding early-stop BETWEEN batches, not the older per-sample
-        evaluate_with_racing which loses _batch_generate's batching
-        throughput -- see that method's own docstring for why the
-        between-batch variant exists). A gate-passed candidate that turns
-        out to be clearly worse than the racing threshold once enough of
-        the full-dev set has been seen is eliminated early instead of
-        always paying for all eval_sample_size samples.
-
-        Threshold tightened (2026-08-16, after the first real validation
-        run showed ZERO racing eliminations end to end): using
-        `baseline_score` here was too loose to ever fire, because the
-        minibatch gate immediately above already filters to candidates
-        within `slack` of baseline -- every candidate reaching this call
-        already cleared a similar bar, so "clearly worse than baseline"
-        almost never triggers. Now races against the current best RECORD's
-        score minus the same `slack` (falls back to `baseline_score` if
-        there's no best_record yet, e.g. generation 0) -- a real,
-        continuously-tightening target as the population improves, while
-        the `slack` margin still gives near-best candidates a fair shot
-        rather than eliminating anything short of an outright new best
-        (avoiding the premature-convergence risk flagged in this session's
-        own optimizer audit -- population diversity already comes from a
-        narrow set of parent-drawing operators, this shouldn't narrow it
-        further by cutting every near-tie early).
+        Stage-2 eval uses evaluate_with_batch_racing (Hoeffding early-stop
+        between batches) so a candidate clearly below the racing threshold
+        is eliminated before paying for all eval_sample_size samples. The
+        racing threshold is the current best record's score minus `slack`
+        (falling back to `baseline_score` before any best_record exists) —
+        a continuously tightening bar that still leaves near-best
+        candidates a fair shot rather than eliminating anything short of a
+        new best, which would prematurely narrow population diversity.
         """
         minibatch = self._sample_dev(minibatch_size, seed=random.randint(0, 10**6))
         full_samples = self._sample_dev(self.eval_sample_size)
@@ -512,9 +449,9 @@ class BaseOptimizer(ABC):
         """Select top-k candidates by score.
 
         Uses rank_key (pof/core/types.py), not raw `.score` -- gate-rejected
-        candidates carry a noisy 16-sample minibatch score on `.score` while
-        gate-passed candidates carry a full-dev score; ranking on `.score`
-        alone let a minibatch fluke outrank a genuine best candidate.
+        candidates carry a noisy minibatch score on `.score` while
+        gate-passed candidates carry a full-dev score, so ranking on
+        `.score` alone could let a minibatch fluke outrank a real best.
         """
         k = k or self.population_size
         sorted_candidates = sorted(candidates, key=rank_key, reverse=True)
@@ -643,14 +580,9 @@ class BaseOptimizer(ABC):
         self, prompt: str, failures: List[Dict[str, Any]]
     ) -> str:
         """Improve a prompt based on failure analysis."""
-        # Bug found via livebench_coding: unlike input/prediction, 'target'
-        # was embedded unbounded -- fine for short answer strings (BBH/math)
-        # but for task_type="code", target is a JSON blob carrying test
-        # cases, and one dataset (LiveCodeBench's large private_test_cases)
-        # blew a meta-prompt out to 22.5M tokens. Truncate like the other
-        # two fields; a clipped JSON blob is no less informative to the LLM
-        # than the full one (neither is human-readable as "the expected
-        # answer" for code tasks), so this loses no real signal.
+        # 'target' must stay truncated like input/prediction: for
+        # task_type="code" it's a JSON blob of test cases, and some
+        # datasets' test cases are large enough to blow up meta-prompt size.
         failure_text = "\n".join(
             f"- Input: {f.get('input', '')[:80]}\n"
             f"  Expected: {str(f.get('target', ''))[:80]}\n"

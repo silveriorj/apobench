@@ -237,13 +237,8 @@ class HuggingFaceLLM(BaseLLM):
             except Exception as e:
                 last_error = e
                 continue
-        # Plain-text fallback (no usable chat template at all). Previously
-        # silent: any templating exception -- not just the documented
-        # "system role unsupported" case -- fell through here with zero log
-        # signal, so a transient/unrelated bug could silently degrade an
-        # entire eval run to this crude non-native format. Now logged once
-        # per call so a degraded run is visible instead of looking like "the
-        # prompt is just bad."
+        # Plain-text fallback (no usable chat template at all). Logged so a
+        # degraded run is visible instead of looking like a bad prompt.
         logger.warning(
             f"Chat template application failed for both message variants "
             f"(last error: {last_error!r}); falling back to plain-text "
@@ -296,17 +291,10 @@ class HuggingFaceLLM(BaseLLM):
             "repetition_penalty": config.repetition_penalty,
         }
 
-        # Greedy if temperature is very low.
-        #
-        # Rather than popping the sampling keys, pin them to the values
-        # GenerationConfig.validate() treats as "unset" for greedy decoding
-        # (transformers generation/configuration_utils.py, `do_sample is False`
-        # branch). Popping leaves the CHECKPOINT's own sampling defaults in
-        # play, and validate() then warns about them on every greedy call.
-        # Setting them per-call keeps the model's generation_config untouched,
-        # so sampling calls still receive our explicit Qwen3-recommended
-        # values (temperature 0.6-0.7, top_p 0.8, top_k 20 — see
-        # `pof.core.types.GenerationConfig`) with nothing leaking between paths.
+        # Greedy if temperature is very low. Pin the sampling keys to the
+        # values transformers treats as "unset" for greedy decoding, rather
+        # than popping them — popping would leave the checkpoint's own
+        # sampling defaults active and trigger validate() warnings.
         if config.temperature < 0.01:
             gen_kwargs["do_sample"] = False
             gen_kwargs["temperature"] = 1.0
