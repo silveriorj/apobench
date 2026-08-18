@@ -1,0 +1,4 @@
+model,framework,total_llm_calls_mean,total_llm_calls_std,total_tokens_mean,total_tokens_std,total_llm_time_seconds_mean,total_llm_time_seconds_std
+gemini-3.5-flash-lite,apex,1087.0,670.3223105342682,354476.3333333333,212752.0825898852,1003.9633333333333,564.1768761951639
+gemini-3.5-flash-lite,baseline_seed,115.0,,34020.0,,112.09,
+gemini-3.5-flash-lite,swift,1237.6666666666667,731.8854646277199,386113.3333333333,227485.07488917452,980.1866666666666,562.0417568413696
