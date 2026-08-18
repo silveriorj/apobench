@@ -71,6 +71,7 @@ def _load_all():
     from pof.optimizers import apex_lean  # noqa: F401
     from pof.optimizers import apex_holdout  # noqa: F401
     from pof.optimizers import baseline  # noqa: F401
+    from pof.optimizers import scope  # noqa: F401
 
 
 __all__ = ["BaseOptimizer", "get_optimizer", "list_optimizers", "register_optimizer"]
