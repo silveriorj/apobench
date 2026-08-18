@@ -1,0 +1,39 @@
+# First-ever validation run of funnel_v7 ("FUNNEL-Prime") -- 10-version
+# lineage never previously exercised end-to-end. Same protocol as every
+# other logged HumanEval comparison in this project for apples-to-apples
+# comparability against APEX+Pareto (0.8841) and SWIFT's validated ceiling.
+llm:
+  backend: huggingface
+  model_name: Qwen/Qwen3-4B-Instruct-2507
+  device: auto
+  dtype: auto
+  max_new_tokens: 512
+  batch_size: 6
+  thinking_mode: false
+
+evaluation:
+  sample_size: 50
+  full_eval_size: 115
+  temperature: 0.0
+  max_new_tokens: 32
+  batch_size: 16
+  racing_enabled: true
+  racing_confidence: 0.05
+  racing_min_samples: 10
+
+optimizer:
+  population_size: 5
+  seed_prompt: ""
+
+output_dir: outputs/humaneval_funnel_v7_validation
+seed: 42
+verbose: true
+
+budget:
+  time_seconds: 3600
+  max_calls: 5000
+  max_total_tokens: 5000000
+  max_generations: 10
+  early_stop_patience: 3
+
+seeds: [42, 123, 7]
