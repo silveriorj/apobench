@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "APOBench: Automatic Prompt Optimization Benchmark"
+type: software
+authors:
+  - family-names: Silverio
+    given-names: R. J.
+repository-code: "https://github.com/silveriorj/pof"
+license: MIT
+version: 1.0.0
+date-released: "2026-08-18"
+keywords:
+  - automatic prompt optimization
+  - large language models
+  - prompt engineering
+  - benchmark
