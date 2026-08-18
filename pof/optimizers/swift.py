@@ -56,7 +56,7 @@ class SWIFTOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         llm,
         dataset,
         evaluator,
-        population_size: int = 8,
+        population_size: int = 5,
         use_holdout_selection: bool = True,
         frontier_pull_prob: float = 0.5,
         **kwargs,
