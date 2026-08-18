@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from pof.config.loader import load_config
 from pof.prompts.loader import get_seed_prompt
