@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pof"
 version = "1.0.0"
-description = "Prompt Optimization Framework — low-cost, auditable prompt evolution"
+description = "APOBench — Automatic Prompt Optimization Benchmark (low-cost, auditable prompt evolution)"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9,<3.14"
