@@ -1,0 +1,17 @@
+[
+  {"input": "Is 17 a prime number? Answer yes or no.", "target": "yes"},
+  {"input": "Is 18 a prime number? Answer yes or no.", "target": "no"},
+  {"input": "Is 23 a prime number? Answer yes or no.", "target": "yes"},
+  {"input": "Is 24 a prime number? Answer yes or no.", "target": "no"},
+  {"input": "Is 29 a prime number? Answer yes or no.", "target": "yes"},
+  {"input": "Is 30 a prime number? Answer yes or no.", "target": "no"},
+  {"input": "Is 31 a prime number? Answer yes or no.", "target": "yes"},
+  {"input": "Is 32 a prime number? Answer yes or no.", "target": "no"},
+  {"input": "Is 37 a prime number? Answer yes or no.", "target": "yes"},
+  {"input": "Is 38 a prime number? Answer yes or no.", "target": "no"},
+  {"input": "Is 41 a prime number? Answer yes or no.", "target": "yes"},
+  {"input": "Is 42 a prime number? Answer yes or no.", "target": "no"},
+  {"input": "Is 43 a prime number? Answer yes or no.", "target": "yes"},
+  {"input": "Is 44 a prime number? Answer yes or no.", "target": "no"},
+  {"input": "Is 47 a prime number? Answer yes or no.", "target": "yes"}
+]

@@ -1,0 +1,33 @@
+# Same shape as examples/01_quickstart_single_run/config.yaml — only the
+# optimizer.method differs (points at my_optimizer.py's registration).
+llm:
+  backend: huggingface
+  model_name: Qwen/Qwen3-4B-Instruct-2507
+  device: auto
+  dtype: auto
+  max_new_tokens: 512
+  thinking_mode: false
+
+evaluation:
+  sample_size: 20
+  full_eval_size: 30
+  temperature: 0.0
+  max_new_tokens: 32
+
+optimizer:
+  method: my_method
+  population_size: 4
+  seed_prompt: "Solve the following task."
+
+dataset:
+  name: bbh
+  task: boolean_expressions
+
+output_dir: outputs/03_custom_optimizer
+seed: 42
+verbose: true
+
+budget:
+  time_seconds: 600
+  max_calls: 200
+  max_generations: 3

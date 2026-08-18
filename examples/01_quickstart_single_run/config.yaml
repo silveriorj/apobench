@@ -1,0 +1,45 @@
+# =============================================================================
+# APOBench quickstart: one optimizer, one task, one seed
+# =============================================================================
+# Trimmed from experiments/configs/swift_apex_benchmark.yaml down to the
+# minimum working example. Every field is commented so you can see what it
+# controls before you change anything.
+# =============================================================================
+
+# --- LLM backend ---
+llm:
+  backend: huggingface        # or "openai" / "ollama" — see pof/llm/factory.py
+  model_name: Qwen/Qwen3-4B-Instruct-2507
+  device: auto
+  dtype: auto
+  max_new_tokens: 512          # tokens for operator generation (mutation, crossover)
+  thinking_mode: false
+
+# --- Evaluation ---
+evaluation:
+  sample_size: 20              # dev samples per optimization eval step (kept small on purpose)
+  full_eval_size: 30           # final held-out test samples
+  temperature: 0.0             # greedy decoding for eval
+  max_new_tokens: 32           # short direct answers
+
+# --- Optimizer ---
+optimizer:
+  method: see                  # smallest/cheapest registered optimizer — good first run
+  population_size: 4
+  seed_prompt: "Solve the following task."
+
+# --- Dataset ---
+dataset:
+  name: bbh
+  task: boolean_expressions
+
+# --- Output ---
+output_dir: outputs/01_quickstart
+seed: 42
+verbose: true
+
+# --- Budget (hard caps — keeps this example cheap and fast) ---
+budget:
+  time_seconds: 600            # 10 minute wall-clock cap
+  max_calls: 200
+  max_generations: 3
