@@ -303,7 +303,27 @@ class HuggingFaceLLM(BaseLLM):
 
         outputs = self._model.generate(**inputs, **gen_kwargs)
         generated = outputs[0][input_length:]
+        self._note_if_truncated(len(generated), gen_kwargs["max_new_tokens"])
         return self._tokenizer.decode(generated, skip_special_tokens=True)
+
+    def _note_if_truncated(self, n_generated: int, cap: int) -> None:
+        """Warn when a generation used its entire budget.
+
+        Hitting the cap exactly means the model was cut off rather than
+        stopping at EOS, so the returned prompt is a fragment. That is
+        invisible otherwise -- the text still looks like a prompt and still
+        gets evaluated -- and it silently degrades whichever operator
+        produced it. Counted so a run can report how often it happened.
+        """
+        if cap and n_generated >= cap:
+            self._truncated_generations = getattr(self, "_truncated_generations", 0) + 1
+            if self._truncated_generations in (1, 10, 50, 100) or \
+                    self._truncated_generations % 250 == 0:
+                logger.warning(
+                    f"[{self.model_name}] generation hit max_new_tokens={cap} "
+                    f"and was cut off (occurrence #{self._truncated_generations}); "
+                    f"raise llm.max_new_tokens if operators need more room"
+                )
 
     @torch.inference_mode()
     def _generate_batch_texts(
@@ -344,9 +364,15 @@ class HuggingFaceLLM(BaseLLM):
         outputs = self._model.generate(**inputs, **gen_kwargs)
 
         results = []
+        pad_id = self._tokenizer.pad_token_id
         for i, output in enumerate(outputs):
             # Skip input tokens (account for left-padding)
             generated = output[inputs["input_ids"].shape[1]:]
+            # Count real tokens only: short sequences in a batch are padded
+            # out to the longest one, so raw length would flag every batch as
+            # truncated.
+            real = int((generated != pad_id).sum()) if pad_id is not None else len(generated)
+            self._note_if_truncated(real, gen_kwargs["max_new_tokens"])
             text = self._tokenizer.decode(generated, skip_special_tokens=True)
             results.append(text)
 
