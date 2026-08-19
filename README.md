@@ -177,7 +177,7 @@ reads from it, or use:
   author = {Silverio, R. J.},
   title  = {APOBench: Automatic Prompt Optimization Benchmark},
   year   = {2026},
-  url    = {https://github.com/silveriorj/pof}
+  url    = {https://github.com/silveriorj/apobench}
 }
 ```
 

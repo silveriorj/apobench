@@ -5,7 +5,7 @@ type: software
 authors:
   - family-names: Silverio
     given-names: R. J.
-repository-code: "https://github.com/silveriorj/pof"
+repository-code: "https://github.com/silveriorj/apobench"
 license: MIT
 version: 1.0.0
 date-released: "2026-08-18"
