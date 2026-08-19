@@ -82,15 +82,43 @@ class XGrammarDecoder(StructuredDecoder):
             compiler = xgr.GrammarCompiler(info)
             self._compiled = compiler.compile_json_schema(schema)
             self._xgr = xgr
+            self._probe_apply_path()
             logger.info("[structured] xgrammar enforcement active")
-        except ImportError:
+        except ImportError as e:
+            # Either xgrammar itself, or the Triton kernel it loads lazily
+            # for the CUDA bitmask path. Distinguish them: "install
+            # xgrammar" is unhelpful advice when xgrammar is present and
+            # Triton is what is missing (common on Windows).
+            self._compiled = None
+            missing = "xgrammar" if "xgrammar" in str(e).lower() else str(e)
             logger.warning(
-                "[structured] xgrammar not installed; falling back to "
-                "validate-and-retry only (pip install xgrammar)"
+                f"[structured] constrained decoding unavailable ({missing}); "
+                f"falling back to validate-and-retry only"
             )
         except Exception as e:  # malformed schema, tokenizer mismatch, ...
+            self._compiled = None
             logger.warning(f"[structured] xgrammar unavailable ({e}); "
                            f"falling back to validate-and-retry only")
+
+    def _probe_apply_path(self) -> None:
+        """Exercise the bitmask kernel now, not mid-generation.
+
+        `apply_token_bitmask_inplace` imports a Triton kernel lazily on first
+        CUDA call, so a missing Triton surfaces as an ImportError *during*
+        generation -- which on a multi-hour run means losing the run rather
+        than degrading. Probing here converts that into a clean fallback at
+        construction time.
+        """
+        import torch
+        import xgrammar as xgr
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        vocab = self._compiled.tokenizer_info.vocab_size
+        matcher = xgr.GrammarMatcher(self._compiled)
+        bitmask = xgr.allocate_token_bitmask(1, vocab)
+        matcher.fill_next_token_bitmask(bitmask)
+        scores = torch.zeros(1, vocab, dtype=torch.float32, device=device)
+        xgr.apply_token_bitmask_inplace(scores, bitmask.to(scores.device))
 
     @property
     def available(self) -> bool:

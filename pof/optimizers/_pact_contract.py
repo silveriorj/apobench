@@ -46,6 +46,11 @@ PROTECTED_MARKERS = ("Examples:", "\nInput:")
 # "prompt distributional overfitting" failure mode.
 MAX_GROWTH_RATIO = 2.0
 
+# An edit may not rewrite the whole instruction: if a model is allowed to
+# target every span at once it has simply performed a whole-prompt rewrite
+# through the contract, which is the failure this design exists to prevent.
+MAX_SPAN_FRACTION = 0.5
+
 CONTRACT_SCHEMA: Dict[str, Any] = {
     "type": "object",
     # Property order matters: it fixes generation order, so `analysis` is
@@ -53,6 +58,14 @@ CONTRACT_SCHEMA: Dict[str, Any] = {
     # free-form and only the final emission is constrained -- the documented
     # resolution to "structure hurts reasoning" (the effect comes from
     # forcing an answer before reasoning completes, not from constraint).
+    #
+    # Edits address a span by INDEX, not by quoting it. Measured on
+    # Qwen3-0.6B, verbatim quoting failed on ~87% of calls: the model either
+    # paraphrased the span (unanchorable) or quoted the entire instruction
+    # (a whole-prompt rewrite that passes an anchor check). An integer index
+    # is trivially reproducible, is checkable against a known range, and is
+    # exactly the kind of constraint a grammar can enforce -- which is what
+    # makes constrained decoding worth applying here at all.
     "properties": {
         "analysis": {"type": "string"},
         "edits": {
@@ -62,10 +75,10 @@ CONTRACT_SCHEMA: Dict[str, Any] = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "find": {"type": "string"},
+                    "span_id": {"type": "integer", "minimum": 0},
                     "replace": {"type": "string"},
                 },
-                "required": ["find", "replace"],
+                "required": ["span_id", "replace"],
                 "additionalProperties": False,
             },
         },
@@ -73,6 +86,22 @@ CONTRACT_SCHEMA: Dict[str, Any] = {
     "required": ["analysis", "edits"],
     "additionalProperties": False,
 }
+
+
+def split_spans(prompt: str) -> List[str]:
+    """Split the editable instruction into addressable spans.
+
+    Sentence-ish granularity: small enough that replacing one is a targeted
+    change, large enough to be a meaningful unit. The appended demonstration
+    block is deliberately excluded -- it is never editable, so it is never
+    given an index and cannot be addressed at all.
+    """
+    editable = prompt
+    guarded = protected_span(prompt)
+    if guarded:
+        editable = prompt[: prompt.find(guarded)]
+    parts = re.split(r"(?<=[.!?:])\s+|\n+", editable)
+    return [p.strip() for p in parts if p and p.strip()]
 
 
 @dataclass
@@ -113,12 +142,11 @@ _OUTPUT_BLOCK = """\
 Return a JSON object with two fields:
 - "analysis": your reasoning from the four steps above.
 - "edits": an array of at most {max_edits} edit objects, each with:
-    "find"    - text copied character-for-character from the CURRENT
-                INSTRUCTION section above.
-    "replace" - the text that replaces it.
+    "span_id" - the number of the span to replace, from the list above.
+    "replace" - the new text for that span.
 
-The "find" text is matched literally. An edit whose "find" does not occur
-in the current instruction is discarded."""
+Edit the fewest spans that remove the root cause. Leave every other span
+untouched by not listing it."""
 
 
 def build_meta_prompt(
@@ -142,12 +170,15 @@ def build_meta_prompt(
         lines.append(f"{i}. INPUT: {inp}\n   EXPECTED: {want}\n   GOT: {got}")
     failure_block = "\n".join(lines) if lines else "(none recorded)"
 
+    spans = split_spans(prompt)
+    span_block = "\n".join(f"[{i}] {s}" for i, s in enumerate(spans)) or "[0] (empty)"
+
     return (
         "# TASK\n"
-        "Improve a task instruction that is failing on specific cases, using "
-        "the smallest set of targeted edits.\n\n"
-        "# CURRENT INSTRUCTION\n"
-        f"<<<\n{prompt}\n>>>\n\n"
+        "Improve a task instruction that is failing on specific cases, by "
+        "replacing as few spans as possible.\n\n"
+        "# CURRENT INSTRUCTION, SPLIT INTO NUMBERED SPANS\n"
+        f"{span_block}\n\n"
         "# OBSERVED FAILURES\n"
         f"{failure_block}\n\n"
         "# METHOD\n"
@@ -167,8 +198,8 @@ def build_retry_prompt(original: str, violation_detail: str) -> str:
         f"{original}\n\n"
         "# PREVIOUS ATTEMPT REJECTED\n"
         f"{violation_detail}\n"
-        "Return corrected JSON in the same format. Copy the \"find\" text "
-        "character-for-character from the CURRENT INSTRUCTION section."
+        "Return corrected JSON in the same format. Use only \"span_id\" values "
+        "that appear in the numbered list above."
     )
 
 
@@ -250,42 +281,59 @@ def apply_contract(
             analysis=analysis, raw=raw)
 
     guarded = protected_span(prompt)
-    working = prompt
-    applied = 0
+    spans = split_spans(prompt)
+    if not spans:
+        return ContractResult(
+            False, violation="no_spans",
+            detail="The instruction has no editable spans.",
+            analysis=analysis, raw=raw)
 
+    replacements: Dict[int, str] = {}
     for i, edit in enumerate(edits, 1):
         if not isinstance(edit, dict):
             return ContractResult(
                 False, violation="bad_edit_type",
                 detail=f"Edit {i} is not an object.",
                 analysis=analysis, raw=raw)
-        find = edit.get("find")
+        sid = edit.get("span_id")
         replace = edit.get("replace")
-        if not isinstance(find, str) or not find:
+        if isinstance(sid, bool) or not isinstance(sid, int):
             return ContractResult(
-                False, violation="empty_find",
-                detail=f"Edit {i} has an empty \"find\".",
+                False, violation="bad_span_id",
+                detail=f"Edit {i}: \"span_id\" must be an integer.",
+                analysis=analysis, raw=raw)
+        if not 0 <= sid < len(spans):
+            return ContractResult(
+                False, violation="span_out_of_range",
+                detail=(f"Edit {i}: span_id {sid} does not exist; valid ids "
+                        f"are 0..{len(spans) - 1}."),
                 analysis=analysis, raw=raw)
         if not isinstance(replace, str):
             return ContractResult(
                 False, violation="bad_replace",
                 detail=f"Edit {i} has a non-string \"replace\".",
                 analysis=analysis, raw=raw)
-        if find not in working:
-            excerpt = find[:60] + ("..." if len(find) > 60 else "")
+        if sid in replacements:
             return ContractResult(
-                False, violation="anchor_missing",
-                detail=(f"Edit {i}: the \"find\" text does not occur in the "
-                        f"current instruction: {excerpt!r}"),
+                False, violation="duplicate_span",
+                detail=f"Edit {i}: span {sid} was already edited.",
                 analysis=analysis, raw=raw)
-        if guarded and find in guarded:
-            return ContractResult(
-                False, violation="protected_region",
-                detail=(f"Edit {i} targets the worked-examples block, which "
-                        f"must not be modified."),
-                analysis=analysis, raw=raw)
-        working = working.replace(find, replace, 1)
-        applied += 1
+        replacements[sid] = replace
+
+    # Targeting every span is a whole-prompt rewrite wearing a contract.
+    if len(spans) > 1 and len(replacements) > max(1, int(len(spans) * MAX_SPAN_FRACTION)):
+        return ContractResult(
+            False, violation="rewrite_disguised_as_edit",
+            detail=(f"{len(replacements)} of {len(spans)} spans targeted; at "
+                    f"most {MAX_SPAN_FRACTION:.0%} may be replaced in one edit."),
+            analysis=analysis, raw=raw)
+
+    rebuilt = " ".join(
+        replacements.get(i, s) for i, s in enumerate(spans)
+        if replacements.get(i, s).strip()
+    )
+    working = rebuilt + (("\n\n" + guarded) if guarded else "")
+    applied = len(replacements)
 
     if guarded and guarded not in working:
         return ContractResult(
