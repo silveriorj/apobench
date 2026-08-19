@@ -38,6 +38,7 @@ import random
 import re
 from typing import Callable, Dict, List, Optional
 
+from pof.optimizers._failure_view import render_failures
 from pof.optimizers.base import (
     format_exemplar,
     _CRITIQUE_SYSTEM_PROMPT,
@@ -248,12 +249,9 @@ def t_reflective_mutation(opt) -> Optional[str]:
         return None
     failures = [d for d in details if not d.get("correct")]
     shown = failures[:4] if failures else details[:4]
-    trace_text = "\n".join(
-        f"- Input: {t.get('input', '')[:120]}\n"
-        f"  Expected: {t.get('target', '')}\n"
-        f"  Model output: {t.get('prediction', '')[:120]}\n"
-        f"  Correct: {t.get('correct')}"
-        for t in shown
+    trace_text = render_failures(
+        shown, max_failures=len(shown),
+        prediction_label="Model output", show_correct=True,
     )
     reflection_prompt = (
         "An AI assistant used the instruction below and produced these "

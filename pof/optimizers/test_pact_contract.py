@@ -215,9 +215,16 @@ class TestMetaPrompt:
         assert "span_id" in mp
         assert "character-for-character" not in mp
 
-    def test_failures_are_truncated(self):
-        mp = build_meta_prompt(PROMPT, [{"input": "x" * 900, "target": "t", "prediction": "p"}])
-        assert "x" * 900 not in mp
+    def test_failures_are_elided_and_say_so(self):
+        """Budgets moved from 160 to ~900 chars; the cut must still announce itself.
+
+        The old 160-char cap made input, expected and got near-identical on
+        HumanEval, and PACT read the resulting truncation as a defect of the
+        model under test. See `_failure_view`.
+        """
+        mp = build_meta_prompt(PROMPT, [{"input": "x" * 5000, "target": "t", "prediction": "p"}])
+        assert "x" * 5000 not in mp
+        assert "characters omitted" in mp
 
     def test_handles_no_failures(self):
         assert "(none recorded)" in build_meta_prompt(PROMPT, [])

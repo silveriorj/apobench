@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 
 from pof.core.types import PromptRecord
 from pof.optimizers import register_optimizer
+from pof.optimizers._failure_view import render_failures
 from pof.optimizers.base import BaseOptimizer, _IMPROVE_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -172,12 +173,9 @@ class GEPAOptimizer(BaseOptimizer):
         """Two-step reflective mutation: diagnose in natural language, then rewrite."""
         failures = [t for t in traces if not t.get("correct")]
         shown = failures[:4] if failures else traces[:4]
-        trace_text = "\n".join(
-            f"- Input: {t.get('input', '')[:120]}\n"
-            f"  Expected: {t.get('target', '')}\n"
-            f"  Model output: {t.get('prediction', '')[:120]}\n"
-            f"  Correct: {t.get('correct')}"
-            for t in shown
+        trace_text = render_failures(
+            shown, max_failures=len(shown),
+            prediction_label="Model output", show_correct=True,
         )
 
         # Step 1: natural-language reflection on the traces

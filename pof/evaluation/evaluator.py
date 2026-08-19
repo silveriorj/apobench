@@ -95,6 +95,9 @@ class Evaluator:
         temperature: float = 0.0,
         batch_size: int = 8,
         system_prompt: Optional[str] = None,
+        racing_enabled: bool = True,
+        racing_confidence: float = 0.05,
+        racing_min_samples: int = 10,
     ):
         self.llm = llm
         self.score_fn = score_fn or create_score_function(task_type)
@@ -109,6 +112,14 @@ class Evaluator:
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.batch_size = batch_size
+        # Racing policy lives here rather than at each call site: these keys
+        # were declared in EvalConfig and set in YAML for many runs but never
+        # reached the evaluator, so `racing_enabled: false` was a no-op and
+        # the hardcoded 0.05/10 were always in force. Anything the config
+        # declares must actually bind.
+        self.racing_enabled = racing_enabled
+        self.racing_confidence = racing_confidence
+        self.racing_min_samples = racing_min_samples
 
     def evaluate(
         self,
@@ -205,8 +216,8 @@ class Evaluator:
         prompt: str,
         samples: List[Dict[str, str]],
         baseline_score: float,
-        confidence: float = 0.05,
-        min_samples: int = 10,
+        confidence: Optional[float] = None,
+        min_samples: Optional[int] = None,
         max_samples: Optional[int] = None,
         system_prompt_override: Optional[str] = None,
         max_new_tokens_override: Optional[int] = None,
@@ -221,8 +232,10 @@ class Evaluator:
             prompt: The prompt to evaluate.
             samples: Full sample set.
             baseline_score: Score to beat (current best).
-            confidence: Significance level (alpha).
-            min_samples: Minimum samples before racing kicks in.
+            confidence: Significance level (alpha). None uses the
+                instance value from config.
+            min_samples: Minimum samples before racing kicks in. None uses
+                the instance value from config.
             max_samples: Maximum samples to evaluate.
             system_prompt_override: Use this system prompt instead of the
                 instance default for this call only.
@@ -236,6 +249,14 @@ class Evaluator:
         Returns:
             EvalResult (may be partial if racing terminated early).
         """
+        if not self.racing_enabled:
+            return self.evaluate(
+                prompt, samples, num_samples=max_samples, shuffle=shuffle,
+                system_prompt_override=system_prompt_override,
+                max_new_tokens_override=max_new_tokens_override,
+            )
+        confidence = self.racing_confidence if confidence is None else confidence
+        min_samples = self.racing_min_samples if min_samples is None else min_samples
         max_samples = max_samples or len(samples)
         samples_to_use = list(samples)
         if shuffle:
@@ -306,7 +327,7 @@ class Evaluator:
         prompt: str,
         samples: List[Dict[str, str]],
         threshold: float,
-        confidence: float = 0.05,
+        confidence: Optional[float] = None,
         min_batches: int = 1,
         system_prompt_override: Optional[str] = None,
         max_new_tokens_override: Optional[int] = None,
@@ -325,6 +346,13 @@ class Evaluator:
             min_batches: batches to run before the bound check kicks in, so a
                 single unlucky first batch cannot eliminate a candidate.
         """
+        if not self.racing_enabled:
+            return self.evaluate(
+                prompt, samples,
+                system_prompt_override=system_prompt_override,
+                max_new_tokens_override=max_new_tokens_override,
+            )
+        confidence = self.racing_confidence if confidence is None else confidence
         # The between-batch bound assumes i.i.d. batch order, so shuffle to
         # avoid biasing the running score if samples arrive pre-sorted.
         samples = list(samples)

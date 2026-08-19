@@ -114,4 +114,9 @@ class HoldoutSelectionMixin:
             # opt-pool dev score -- the holdout score is what actually
             # decided the winner.
             result.best_score = winner.scores.get("holdout", winner.score)
+            # Provenance for the log line: `best_score` is now a holdout
+            # score on a much smaller pool, and was previously printed as
+            # "dev score=". Two different quantities under one label made
+            # every run report look self-consistent when it was not.
+            result.config["selection_score_source"] = f"holdout@{len(self._holdout)}"
         return result

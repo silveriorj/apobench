@@ -22,6 +22,7 @@ from pof.core.types import EvalResult, GenerationConfig, OptimizationResult, Pro
 from pof.datasets.loader import TaskDataset
 from pof.evaluation.evaluator import Evaluator
 from pof.llm.base import BaseLLM
+from pof.optimizers._failure_view import render_failures
 from pof.core.exceptions import BudgetExceeded
 
 logger = logging.getLogger(__name__)
@@ -580,15 +581,7 @@ class BaseOptimizer(ABC):
         self, prompt: str, failures: List[Dict[str, Any]]
     ) -> str:
         """Improve a prompt based on failure analysis."""
-        # 'target' must stay truncated like input/prediction: for
-        # task_type="code" it's a JSON blob of test cases, and some
-        # datasets' test cases are large enough to blow up meta-prompt size.
-        failure_text = "\n".join(
-            f"- Input: {f.get('input', '')[:80]}\n"
-            f"  Expected: {str(f.get('target', ''))[:80]}\n"
-            f"  Got: {f.get('prediction', '')[:80]}"
-            for f in failures[:5]
-        )
+        failure_text = render_failures(failures, max_failures=5)
 
         meta_prompt = (
             "The following instruction was used but produced incorrect outputs "

@@ -19,6 +19,7 @@ from pof.core.exceptions import BudgetExceeded
 from pof.core.types import OptimizationResult
 from pof.datasets.loader import TaskDataset, load_dataset_by_name
 from pof.evaluation.evaluator import Evaluator
+from pof.evaluation.power import describe_power, minimum_detectable_effect
 from pof.evaluation.scoring import create_score_function
 from pof.llm.base import BaseLLM
 from pof.llm.factory import create_llm
@@ -121,14 +122,24 @@ class RunOrchestrator:
                 "[Test eval] skipped — best prompt is empty and no seed prompt to fall back to"
             )
         else:
+            source = result.config.get(
+                "selection_score_source",
+                f"dev@{self.config.evaluation.sample_size}",
+            )
             logger.info(
                 f"[Test eval] {len(test_samples)} samples on best prompt "
-                f"(dev score={result.best_score:.4f})"
+                f"(selection score {source}={result.best_score:.4f})"
             )
             test_result = evaluator.evaluate(result.best_prompt, test_samples)
             result.test_score = test_result.score
             result.test_per_sample_details = test_result.per_sample_details
             logger.info(f"[Test eval] test_score={result.test_score:.4f}")
+            # State the resolution of the instrument next to its reading, so
+            # a null result is never mistaken for an underpowered one.
+            logger.info(f"[Power] {describe_power(result.test_score, len(test_samples))}")
+            result.config["minimum_detectable_effect"] = minimum_detectable_effect(
+                result.test_score, len(test_samples)
+            )
 
         optimizer.tracker.test_score = result.test_score
 
@@ -275,6 +286,9 @@ class RunOrchestrator:
             temperature=self.config.evaluation.temperature,
             batch_size=self.config.evaluation.batch_size,
             system_prompt=self.config.evaluation.system_prompt_override,
+            racing_enabled=self.config.evaluation.racing_enabled,
+            racing_confidence=self.config.evaluation.racing_confidence,
+            racing_min_samples=self.config.evaluation.racing_min_samples,
         )
 
     def _save_result(self, result: OptimizationResult) -> None:

@@ -33,6 +33,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from pof.optimizers._failure_view import render_failures
+
 # At most this many edits per call. A cap is what makes an edit "targeted";
 # it also bounds how much damage one bad call can do.
 MAX_EDITS = 2
@@ -154,7 +156,6 @@ def build_meta_prompt(
     failures: List[Dict[str, Any]],
     max_edits: int = MAX_EDITS,
     max_failures: int = 5,
-    max_field: int = 160,
 ) -> str:
     """Assemble the contract meta-prompt.
 
@@ -162,13 +163,9 @@ def build_meta_prompt(
     -- the failure inputs are themselves task text and would otherwise read
     as commands.
     """
-    lines = []
-    for i, f in enumerate(failures[:max_failures], 1):
-        got = str(f.get("prediction", ""))[:max_field]
-        want = str(f.get("target", ""))[:max_field]
-        inp = str(f.get("input", ""))[:max_field]
-        lines.append(f"{i}. INPUT: {inp}\n   EXPECTED: {want}\n   GOT: {got}")
-    failure_block = "\n".join(lines) if lines else "(none recorded)"
+    failure_block = render_failures(
+        failures, max_failures=max_failures, numbered=True
+    )
 
     spans = split_spans(prompt)
     span_block = "\n".join(f"[{i}] {s}" for i, s in enumerate(spans)) or "[0] (empty)"

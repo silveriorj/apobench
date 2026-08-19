@@ -62,6 +62,7 @@ import random
 import re
 from typing import Callable, Dict, List, Optional
 
+from pof.optimizers._failure_view import render_failures
 from pof.optimizers.base import (
     _CRITIQUE_SYSTEM_PROMPT,
     _GENERATE_SYSTEM_PROMPT,
@@ -84,17 +85,11 @@ _FACETS: Dict[str, str] = {
 
 
 def _format_cases(cases: List[Dict], n: int = 6, label_correct: bool = False) -> str:
-    lines = []
-    for c in cases[:n]:
-        line = (
-            f"- Input: {str(c.get('input', ''))[:100]}\n"
-            f"  Expected: {c.get('target', '')}\n"
-            f"  Model output: {str(c.get('prediction', ''))[:100]}"
-        )
-        if label_correct:
-            line += f"\n  Correct: {c.get('correct')}"
-        lines.append(line)
-    return "\n".join(lines)
+    return render_failures(
+        cases, max_failures=n,
+        prediction_label="Model output", show_correct=label_correct,
+        empty="",
+    )
 
 
 # --- ETGPO: error-taxonomy-guided ---

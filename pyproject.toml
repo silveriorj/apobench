@@ -43,9 +43,10 @@ line-length = 100
 target-version = "py39"
 
 [tool.pytest.ini_options]
-# "pof/optimizers" added because pof/optimizers/test_apex_bandit.py (the
-# APEX bandit regression suite) lives next to the code it tests, not under
-# tests/ -- a review round found a bare `pytest` invocation from repo root
-# silently collected zero of its tests since testpaths didn't include it.
-testpaths = ["tests", "pof/optimizers"]
+# "pof" rather than "pof/optimizers": several suites live next to the code
+# they test rather than under tests/, and naming packages one at a time has
+# now silently dropped tests twice -- first pof/optimizers/test_apex_bandit.py,
+# then pof/evaluation/test_racing_config.py. Collecting the whole package
+# means adding a suite never again requires remembering to edit this line.
+testpaths = ["tests", "pof"]
 pythonpath = ["."]
