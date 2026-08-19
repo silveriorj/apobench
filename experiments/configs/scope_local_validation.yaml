@@ -1,0 +1,45 @@
+# SCOPE local correctness run -- Qwen3-0.6B on CPU.
+#
+# This validates that SCOPE runs end-to-end against a REAL model: mechanisms
+# fire, nothing crashes, cost accounting populates. Accuracy from this config
+# is meaningless (0.6B model, tiny samples, CPU) and must not be reported.
+llm:
+  backend: huggingface
+  model_name: Qwen/Qwen3-0.6B
+  device: cpu
+  dtype: auto
+  max_new_tokens: 128
+  batch_size: 4
+  thinking_mode: false
+
+evaluation:
+  sample_size: 24          # dev pool before M1 calibration
+  full_eval_size: 12       # tiny test slice; correctness only
+  temperature: 0.0
+  max_new_tokens: 96
+  batch_size: 4
+  racing_enabled: false
+
+optimizer:
+  method: scope
+  population_size: 4
+  seed_prompt: ""
+  num_iterations: 2
+  params:
+    candidates_per_operator: 1
+    top_m_operators: 3
+
+dataset:
+  name: humaneval
+  num_samples: 60
+
+output_dir: outputs/scope_local_validation
+seed: 42
+verbose: true
+
+budget:
+  time_seconds: 5400
+  max_calls: 400
+  max_total_tokens: 2000000
+  max_generations: 2
+  early_stop_patience: 3
