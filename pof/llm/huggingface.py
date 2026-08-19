@@ -290,6 +290,12 @@ class HuggingFaceLLM(BaseLLM):
             "pad_token_id": self._tokenizer.pad_token_id,
             "repetition_penalty": config.repetition_penalty,
         }
+        # Optional grammar-constrained decoding (see pof/llm/structured.py).
+        # A caller sets this for the duration of one call and clears it after;
+        # the processor carries parser position state, so it must be rebuilt
+        # per generation rather than reused.
+        if getattr(self, "_logits_processors", None):
+            gen_kwargs["logits_processor"] = self._logits_processors
 
         # Greedy if temperature is very low. Pin the sampling keys to the
         # values transformers treats as "unset" for greedy decoding, rather
@@ -352,6 +358,12 @@ class HuggingFaceLLM(BaseLLM):
             "pad_token_id": self._tokenizer.pad_token_id,
             "repetition_penalty": config.repetition_penalty,
         }
+        # Optional grammar-constrained decoding (see pof/llm/structured.py).
+        # A caller sets this for the duration of one call and clears it after;
+        # the processor carries parser position state, so it must be rebuilt
+        # per generation rather than reused.
+        if getattr(self, "_logits_processors", None):
+            gen_kwargs["logits_processor"] = self._logits_processors
 
         # Same greedy handling as `_generate_text` — see the comment there.
         # This is the hot path: batched evaluation is the bulk of all calls.
