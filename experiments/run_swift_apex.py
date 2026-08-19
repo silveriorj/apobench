@@ -249,7 +249,14 @@ _DEFAULT_EVAL_MAX_NEW_TOKENS = 32
 # guidance: generous headroom, well above the 1024 dyck previously used --
 # reasoning length before \boxed{} varies a lot and truncation silently kills
 # an otherwise-correct answer.
-COT_MAX_NEW_TOKENS = 1536
+#
+# Raised 1536 -> 2048 (2026-08-18) for margin on the longest reasoning
+# chains. It is a cap, not a target: a chain that reaches \boxed{} at 400
+# tokens costs 400 either way, so the extra headroom is only ever paid when
+# it is actually needed -- which is exactly the case it exists for.
+# HuggingFaceLLM now counts generations that consume the full budget, so
+# whether this bound ever binds is measured rather than assumed.
+COT_MAX_NEW_TOKENS = 2048
 
 # Brief CoT (--cot-brief flag): "cot" task_type -- one-line-per-step
 # reasoning, no prose, ending in "So the answer is X" (see

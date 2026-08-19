@@ -33,8 +33,15 @@ logger = logging.getLogger(__name__)
 # COT_BRIEF_MAX_NEW_TOKENS / COT_MAX_NEW_TOKENS there.
 MODE_CONFIGS: Dict[str, Tuple[Optional[str], Optional[int]]] = {
     "ao": (None, None),  # None = defer to the evaluator's own per-run defaults
+    # `cot` is deliberately the SHORT arm -- one-line-per-step, ending in
+    # "So the answer is X". Its 256-token cap is the hypothesis it exists to
+    # test (does most of full CoT's gain survive a much shorter trace?), so
+    # raising it would collapse this mode into `thinking` and destroy the
+    # comparison. Kept small on purpose.
     "cot": (SYSTEM_PROMPT_BY_TASK_TYPE["cot"], 256),
-    "thinking": (SYSTEM_PROMPT_BY_TASK_TYPE["thinking"], 1536),
+    # `thinking` is the generous arm: full reasoning to \boxed{}. Matches
+    # COT_MAX_NEW_TOKENS in experiments/run_swift_apex.py.
+    "thinking": (SYSTEM_PROMPT_BY_TASK_TYPE["thinking"], 2048),
 }
 MODE_BY_OPERATOR = {f"mode_{m}": m for m in MODE_CONFIGS}
 
