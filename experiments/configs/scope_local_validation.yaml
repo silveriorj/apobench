@@ -1,12 +1,16 @@
-# SCOPE local correctness run -- Qwen3-0.6B on CPU.
+# SCOPE local correctness run -- Qwen3-0.6B on the local RTX 3050 (4 GB).
 #
 # This validates that SCOPE runs end-to-end against a REAL model: mechanisms
 # fire, nothing crashes, cost accounting populates. Accuracy from this config
-# is meaningless (0.6B model, tiny samples, CPU) and must not be reported.
+# is meaningless (0.6B model, tiny samples) and must not be reported.
+#
+# 0.6B in bf16 is ~1.2 GB of weights, so it fits the 3050's 4 GB with room
+# for KV cache at this batch size. The 4B model does NOT fit locally -- real
+# accuracy comparisons run on t101 (see scope_humaneval.yaml).
 llm:
   backend: huggingface
   model_name: Qwen/Qwen3-0.6B
-  device: cpu
+  device: auto
   dtype: auto
   max_new_tokens: 128
   batch_size: 4

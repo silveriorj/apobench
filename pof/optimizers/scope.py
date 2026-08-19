@@ -45,8 +45,18 @@ M4  Per-instance Pareto frontier (GEPA, arXiv:2507.19457) over a
 M5  Cost as a real objective (cf. MO-CAPO, arXiv:2605.18869), not a cap.
     Cost is scored on the *prompt being selected* -- its own length plus the
     output length it induces -- because that is what a deployed prompt bills
-    on every future query. Selection runs on an accuracy x cost front, so a
-    cheaper prompt of equal accuracy wins.
+    on every future query, and because prompt length is a property of what a
+    method *produces* rather than of how long it searched (unlike search
+    spend, which reflects each method's configured budget and only becomes
+    comparable once normalized per search slot).
+
+    Selection uses a non-dominated accuracy x cost front, deliberately NOT a
+    scalar length penalty. This matters: prompt length is positively
+    correlated with score in this project's own audit data (r = 0.106, and
+    feature effects shrink by a third to a half once stratified by length),
+    so a scalar penalty would trade away real accuracy. A Pareto front
+    cannot -- it only prefers the cheaper prompt among candidates that are
+    *not worse* on accuracy, which is exactly the intended semantics.
 
 Deliberately excluded, each on measured evidence: whole-prompt rewriting as
 the default edit (84% destructive), `trajectory` (weakest operator by mean
@@ -350,6 +360,39 @@ class SCOPEOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         else:
             out_tokens = 0.0
         return self.COST_INPUT_WEIGHT * in_tokens + self.COST_OUTPUT_WEIGHT * out_tokens
+
+    def cost_report(self) -> Dict[str, float]:
+        """Cost breakdown separating one-off search spend from recurring spend.
+
+        Two different quantities get conflated when methods are compared on
+        "cost", and the distinction decides what a number means:
+
+        - **Search spend** is one-off, and reflects each method's *configured
+          budget* rather than its efficiency. Comparing totals across methods
+          that ran different numbers of iterations x population measures how
+          hard each was allowed to search. `tokens_per_slot` normalizes that
+          away, and the ordering can reverse: in this project's cross-method
+          data the highest total spender was the *lowest* per-slot spender.
+          Report both; attribute a premium to inefficiency only per-slot.
+        - **Deployed prompt length** is recurring -- billed on every future
+          query, forever -- and is a property of what the method produced, so
+          it needs no such qualification. It is the cost M5 optimizes.
+
+        Together these give the crossover: how many queries a shorter prompt
+        needs to repay a larger search bill.
+        """
+        usage = self.llm.get_usage()
+        slots = max(1, self.generation * self.population_size)
+        best = self.best_record
+        return {
+            "search_calls": float(usage.total_calls),
+            "search_tokens": float(usage.total_tokens),
+            "search_slots": float(slots),
+            "tokens_per_slot": usage.total_tokens / slots,
+            "prompt_chars": float(len(best.text)) if best and best.text else 0.0,
+            "prompt_tokens_est": float(len(best.text.split())) if best and best.text else 0.0,
+            "signal_pool_size": float(len(self._signal_pool)),
+        }
 
     def _cost_front(self, records: Sequence[PromptRecord]) -> List[PromptRecord]:
         """Non-dominated set on (accuracy up, cost down).
