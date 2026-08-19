@@ -1,0 +1,54 @@
+# EXP-021: SCOPE with ONLY M4 (GEPA-Pareto tournament) active.
+#
+# Diagnostic, not a proposal. EXP-020 ran all five mechanisms together and
+# scored exactly baseline (0.8348 on 3/3 seeds), which cannot distinguish
+# "M1/M3/M5 hurt" from "SCOPE's base search is broken". This isolates the
+# one mechanism with replicated evidence behind it (+4.93pp, 9/9 seed
+# dominance, in APEX) by switching the other three off.
+#
+# Reading the result:
+#   ~0.88  -> the base is sound; M1/M3/M5 were the damage. Fix M1 and retest.
+#   ~0.83  -> the base itself is broken (operator pool / selection /
+#             evaluation path), and M1 was never the real problem.
+# Identical protocol to EXP-020 otherwise, so the two are directly comparable.
+llm:
+  backend: huggingface
+  model_name: Qwen/Qwen3-4B-Instruct-2507
+  device: auto
+  dtype: auto
+  max_new_tokens: 1512
+  batch_size: 6
+  thinking_mode: false
+
+evaluation:
+  sample_size: 50
+  full_eval_size: 115
+  temperature: 0.0
+  max_new_tokens: 32
+  batch_size: 16
+  racing_enabled: true
+  racing_confidence: 0.05
+  racing_min_samples: 10
+
+optimizer:
+  population_size: 5
+  seed_prompt: ""
+  num_iterations: 6
+  params:
+    use_signal_calibration: false   # M1 off
+    use_retention_gate: false       # M3 off
+    use_cost_front: false           # M5 off
+    frontier_pull_prob: 0.5         # M4 ON -- the only active mechanism
+
+output_dir: outputs/humaneval_scope_m4_only
+seed: 42
+verbose: true
+
+budget:
+  time_seconds: 3600
+  max_calls: 5000
+  max_total_tokens: 5000000
+  max_generations: 6
+  early_stop_patience: 3
+
+seeds: [42, 123, 7]

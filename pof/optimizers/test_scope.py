@@ -20,6 +20,9 @@ def _bare_scope(**overrides):
     opt.population = []
     opt.population_size = 5
     opt.frontier_pull_prob = 0.0
+    opt.use_signal_calibration = True
+    opt.use_retention_gate = True
+    opt.use_cost_front = True
     opt.tracker = type("_T", (), {"add_note": lambda self, note: None})()
     for k, v in overrides.items():
         setattr(opt, k, v)
@@ -229,3 +232,44 @@ class TestSelection:
     def test_registered_and_importable(self):
         from pof.optimizers import get_optimizer
         assert get_optimizer("scope") is SCOPEOptimizer
+
+
+class TestAblationSwitches:
+    """A flag that silently fails to ablate would invalidate the whole
+    isolation experiment, so each is asserted to actually change behaviour."""
+
+    def test_signal_calibration_off_leaves_pool_untouched(self):
+        opt = _bare_scope(
+            _signal_pool=[{"input": f"i{i}"} for i in range(4)],
+            MIN_SIGNAL_POOL=1, use_signal_calibration=False,
+        )
+        a = _rec("a", 0.5, [1, 1, 0, 0])
+        b = _rec("b", 0.25, [1, 0, 1, 0])
+        opt._calibrate_signal_pool([a, b])
+        assert len(opt._signal_pool) == 4, "M1 off must not drop instances"
+        assert a.performance_vector == [1, 1, 0, 0], "vectors must be untouched"
+        assert opt._calibrated is True, "still marked done so it is not retried"
+
+    def test_retention_gate_off_admits_destructive_child(self):
+        destructive = dict(RETENTION_FLOOR=0.8)
+        parent = _rec("p", 0.75, [1, 1, 1, 0])
+        child = _rec("c", 0.25, [1, 0, 0, 0])   # retention 0.33, scores worse
+        assert _bare_scope(**destructive)._admits(child, [parent]) is False
+        off = _bare_scope(use_retention_gate=False, **destructive)
+        assert off._admits(child, [parent]) is True, "M3 off must admit"
+        assert child.metadata["retention"] == pytest.approx(0.3333, abs=1e-3), \
+            "retention is still MEASURED (M2) even when not used to gate (M3)"
+
+    def test_cost_front_off_selects_purely_on_score(self):
+        recs = [
+            _rec("a very long but accurate prompt here", 0.90, [1, 1], rid="long"),
+            _rec("short", 0.50, [1, 0], rid="short"),
+            _rec("mid length prompt", 0.70, [1, 1], rid="mid"),
+        ]
+        off = _bare_scope(population_size=2, frontier_pull_prob=0.0,
+                          use_cost_front=False)
+        picked = [r.id for r in off._select_next_population(recs)]
+        assert picked[0] == "long", "elitism still applies"
+        assert "short" not in picked, (
+            "with M5 off, the cheap-but-weak prompt must not be pulled in"
+        )

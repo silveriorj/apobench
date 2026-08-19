@@ -156,6 +156,12 @@ class SCOPEOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         top_m_operators: int = 5,
         ucb_c: float = 0.5,
         frontier_pull_prob: float = 0.5,
+        # Ablation switches. EXP-020 showed the composite scoring exactly
+        # baseline, so each mechanism must be testable alone -- a composite
+        # result cannot say which part is responsible.
+        use_signal_calibration: bool = True,   # M1
+        use_retention_gate: bool = True,       # M3
+        use_cost_front: bool = True,           # M5
         **kwargs,
     ):
         super().__init__(
@@ -170,6 +176,9 @@ class SCOPEOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         self.top_m_operators = top_m_operators
         self.ucb_c = ucb_c
         self.frontier_pull_prob = frontier_pull_prob
+        self.use_signal_calibration = use_signal_calibration
+        self.use_retention_gate = use_retention_gate
+        self.use_cost_front = use_cost_front
         self._operator_scores: Dict[str, List[float]] = {}
         self._calibrated = False
 
@@ -244,7 +253,8 @@ class SCOPEOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         preserved -- skipping that would silently corrupt every later
         comparison, which is the sharpest failure mode in this design.
         """
-        if self._calibrated:
+        if self._calibrated or not self.use_signal_calibration:
+            self._calibrated = True
             return
         n = len(self._signal_pool)
         vectors = [
@@ -332,7 +342,11 @@ class SCOPEOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         if not child.performance_vector or not vecs:
             return True
         best = max(self._retention(child.performance_vector, v) for v in vecs)
+        # Recorded even when the gate is off: retention is a measurement (M2)
+        # independent of whether it is used to reject (M3).
         child.metadata["retention"] = round(best, 4)
+        if not self.use_retention_gate:
+            return True
         parent_best = max(p.score for p in parents)
         if child.score > parent_best:
             return True                      # improved: never a destructive edit
@@ -457,12 +471,13 @@ class SCOPEOptimizer(HoldoutSelectionMixin, BaseOptimizer):
         selected: List[PromptRecord] = [ranked[0]]
         chosen_ids = {ranked[0].id}
 
-        for rec in self._cost_front(ranked):
-            if len(selected) >= self.population_size:
-                break
-            if rec.id not in chosen_ids:
-                selected.append(rec)
-                chosen_ids.add(rec.id)
+        if self.use_cost_front:
+            for rec in self._cost_front(ranked):
+                if len(selected) >= self.population_size:
+                    break
+                if rec.id not in chosen_ids:
+                    selected.append(rec)
+                    chosen_ids.add(rec.id)
 
         coverage = pareto_frontier_coverage(ranked)
         remaining = [r for r in ranked if r.id not in chosen_ids]
