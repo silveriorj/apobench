@@ -23,8 +23,26 @@ def _add_budget_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--eval-batch-size", type=int, default=None, help="Evaluation batch size override")
 
 
+def _force_utf8_stdio() -> None:
+    """Make stdout/stderr tolerate non-ASCII on legacy Windows consoles.
+
+    The default Windows console encoding is cp1252, which cannot encode the
+    check mark this CLI prints on success -- so a completed run died with
+    UnicodeEncodeError *after* all work was done and results were already
+    written, turning a successful run into a non-zero exit.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass  # non-reconfigurable stream (pipe, pytest capture)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Main CLI entry point."""
+    _force_utf8_stdio()
     parser = argparse.ArgumentParser(
         prog="pof",
         description="Prompt Optimization Framework — low-cost, auditable prompt evolution",
@@ -58,8 +76,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Initial seed prompt",
     )
     run_parser.add_argument(
-        "-o", "--output", type=str, default="outputs",
-        help="Output directory",
+        # Default None, not "outputs": a non-None default is applied as a
+        # config override unconditionally below, which silently discarded
+        # whatever `output_dir` the config file set.
+        "-o", "--output", type=str, default=None,
+        help="Output directory (default: the config's output_dir)",
     )
     run_parser.add_argument(
         "-v", "--verbose", action="store_true",
@@ -90,8 +111,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Specific task",
     )
     bench_parser.add_argument(
-        "-o", "--output", type=str, default="outputs",
-        help="Output directory",
+        "-o", "--output", type=str, default=None,
+        help="Output directory (default: the config's output_dir)",
     )
     bench_parser.add_argument(
         "-v", "--verbose", action="store_true",
