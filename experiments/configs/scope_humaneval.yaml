@@ -6,7 +6,7 @@ llm:
   model_name: Qwen/Qwen3-4B-Instruct-2507
   device: auto
   dtype: auto
-  max_new_tokens: 512
+  max_new_tokens: 1512
   batch_size: 6
   thinking_mode: false
 

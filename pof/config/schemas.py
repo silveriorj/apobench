@@ -13,7 +13,13 @@ class LLMConfig(BaseModel):
     model_name: str = Field(default="Qwen/Qwen2.5-3B-Instruct", description="Model identifier")
     device: str = Field(default="auto", description="Device: 'auto', 'cuda', 'cpu'")
     dtype: str = Field(default="auto", description="Dtype: 'auto', 'float16', 'bfloat16'")
-    max_new_tokens: int = Field(default=512, description="Default max new tokens for generation")
+    # Operator-generation headroom (NOT eval; see EvalConfig.max_new_tokens).
+    # This is a cap, not a target: generation stops at EOS, so unused headroom
+    # costs nothing. Raised 512 -> 1512 so no operator can be silently cut off
+    # mid-prompt. HuggingFaceLLM counts and warns on generations that actually
+    # consume the full budget, so "was it ever binding?" is now measured
+    # rather than assumed.
+    max_new_tokens: int = Field(default=1512, description="Default max new tokens for generation")
     temperature: float = Field(default=0.7, description="Default temperature")
     top_p: float = Field(default=0.95, description="Default top-p")
     batch_size: int = Field(default=8, description="Batch size for parallel evaluation")

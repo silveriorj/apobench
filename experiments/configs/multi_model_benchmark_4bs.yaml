@@ -20,7 +20,7 @@ llm:
   backend: huggingface
   device: auto
   dtype: auto
-  max_new_tokens: 512      # Operator generation tokens (mutation, crossover, EDA)
+  max_new_tokens: 1512      # Operator generation tokens (mutation, crossover, EDA)
   batch_size: 2
   thinking_mode: false
 

@@ -13,7 +13,7 @@ llm:
   model_name: Qwen/Qwen3-4B-Instruct-2507  # GQA 8 KV heads, ~8 GB weights on bf16
   device: auto
   dtype: auto
-  max_new_tokens: 512      # Operator generation tokens (mutation, crossover, EDA)
+  max_new_tokens: 1512      # Operator generation tokens (mutation, crossover, EDA)
   batch_size: 6            # Unused by HF backend directly; kept for reference
   thinking_mode: false
 
