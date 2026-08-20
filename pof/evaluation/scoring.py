@@ -105,14 +105,39 @@ def _score_math(prediction: str, target: str) -> int:
         pred_final = json_match.group(1) if json_match else None
     target_final = _extract_boxed(target) or _extract_answer_is(target) or target
 
-    # math_comp (AMC/AIME): target is a zero-padded integer string like "025".
-    # Prompt tells model "have the N digits as the last part of the response."
     target_stripped = target_final.strip()
+
+    # AMC math_comp: target is a single letter (A–E multiple choice).
+    # _score_math normally doesn't call _extract_choice; add it here so
+    # LiveBench AMC problems don't fall through to string/numeric comparison.
+    if re.fullmatch(r"[A-Ea-e]", target_stripped):
+        pred_choice = _extract_choice(pred_final or prediction)
+        if pred_choice:
+            return 1 if pred_choice.upper() == target_stripped.upper() else 0
+
+    # AIME math_comp: target is a zero-padded integer string like "025".
+    # Prompt tells model "have the N digits as the last part of the response."
     if re.fullmatch(r"\d{1,4}", target_stripped):
         n = len(target_stripped)
         trailing = _extract_trailing_digits(prediction, n)
         if trailing is not None:
-            return 1 if trailing == target_stripped else 0
+            if trailing == target_stripped:
+                return 1
+            # Handle leading-zero stripping: "025" == "25" numerically
+            try:
+                if int(trailing) == int(target_stripped):
+                    return 1
+            except ValueError:
+                pass
+        # Also try any trailing number (e.g., model writes "25" not "025")
+        m = re.search(r"(\d+)\s*$", prediction.strip())
+        if m:
+            try:
+                if int(m.group(1)) == int(target_stripped):
+                    return 1
+            except ValueError:
+                pass
+        return 0
 
     # Exact match on the extracted final answer (LaTeX-normalized)
     if pred_final is not None:
@@ -566,7 +591,7 @@ def _extract_boolean(text: str) -> Optional[bool]:
     if text in false_values:
         return False
 
-    # Pattern: "the answer is yes/no"
+    # Pattern: "the answer is yes/no" or "answer: valid" etc.
     match = re.search(
         r"(?:answer|result)\s*(?:is|:)\s*(yes|no|true|false|valid|invalid)",
         text,
@@ -575,6 +600,19 @@ def _extract_boolean(text: str) -> Optional[bool]:
     if match:
         val = match.group(1).lower()
         return val in ("yes", "true", "valid")
+
+    # Tail fallback: at 2048 tokens BBH CoT sometimes concludes with phrasing
+    # like "the argument is valid" or "this is false" without the standard
+    # "the answer is X" marker. Scan the last 200 chars for a keyword.
+    # Check "invalid" before "valid" since "invalid" contains "valid" as a substr.
+    tail = text[-200:].lower()
+    for word, is_true in (
+        ("invalid", False), ("valid", True),
+        ("false", False), ("true", True),
+        ("no", False), ("yes", True),
+    ):
+        if re.search(r"\b" + word + r"\b", tail):
+            return is_true
 
     return None
 
@@ -591,6 +629,12 @@ def _extract_cot_answer(text: str) -> Optional[str]:
     """
     if not text:
         return None
+
+    # Pattern: <solution>ANSWER</solution> — LiveBench's primary extraction format.
+    # Check before boxed: LiveBench wraps the final answer in these tags.
+    m = re.search(r"<solution>\s*(.+?)\s*</solution>", text, re.DOTALL | re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
 
     # Pattern: \boxed{<answer>} — used by the "thinking" system prompt, which
     # explicitly asks for this format instead of "the answer is X".
