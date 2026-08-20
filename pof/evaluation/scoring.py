@@ -92,6 +92,12 @@ def _score_math(prediction: str, target: str) -> int:
 
     Extraction priority: \\boxed{} → 'The answer is X' → JSON answer field.
     Comparison: normalized exact match, then sympy equivalence.
+
+    Two LiveBench-specific paths:
+    - math_comp (AMC/AIME): target is N digits; extract trailing N digits from
+      the prediction tail (prompt instructs model to end with the number).
+    - AMPS_Hard integrals: strip integration constants (+C, +K) before
+      sympy comparison — indefinite integrals match up to a constant.
     """
     pred_final = _extract_boxed(prediction) or _extract_answer_is(prediction)
     if pred_final is None:
@@ -99,11 +105,27 @@ def _score_math(prediction: str, target: str) -> int:
         pred_final = json_match.group(1) if json_match else None
     target_final = _extract_boxed(target) or _extract_answer_is(target) or target
 
+    # math_comp (AMC/AIME): target is a zero-padded integer string like "025".
+    # Prompt tells model "have the N digits as the last part of the response."
+    target_stripped = target_final.strip()
+    if re.fullmatch(r"\d{1,4}", target_stripped):
+        n = len(target_stripped)
+        trailing = _extract_trailing_digits(prediction, n)
+        if trailing is not None:
+            return 1 if trailing == target_stripped else 0
+
     # Exact match on the extracted final answer (LaTeX-normalized)
     if pred_final is not None:
+        # For AMPS_Hard integrals: strip indefinite-integral constant (+C/+K)
+        # before comparison. The constant is implicit in the target.
+        pred_clean = _strip_integration_constant(pred_final)
+        if _normalize_math(pred_clean) == _normalize_math(target_final):
+            return 1
+        if _math_equiv(pred_clean, target_final):
+            return 1
+        # Try the original (in case constant is genuinely part of the answer)
         if _normalize_math(pred_final) == _normalize_math(target_final):
             return 1
-        # Mathematical equivalence (LiveBench-style leniency): 0.5 == \frac{1}{2}
         if _math_equiv(pred_final, target_final):
             return 1
 
@@ -372,6 +394,21 @@ def _normalize_math(text: str) -> str:
     text = re.sub(r"\\[,;! ]", "", text)   # LaTeX spacing commands incl. '\ '
     text = re.sub(r"\s+", "", text)
     return text
+
+
+def _strip_integration_constant(expr: str) -> str:
+    """Remove a trailing integration constant (+C, +K, etc.) from a LaTeX expr."""
+    return re.sub(r"\s*\+\s*[CcKk]\s*$", "", expr).strip()
+
+
+def _extract_trailing_digits(text: str, n: int) -> Optional[str]:
+    """Extract the last n-digit sequence from the tail of `text`.
+
+    Used for math_comp (AMC/AIME) where the prompt instructs the model to
+    place the N-digit answer at the very end of its response.
+    """
+    m = re.search(r"(\d{" + str(n) + r"})\s*$", text.strip())
+    return m.group(1) if m else None
 
 
 def _extract_boxed(text: str) -> Optional[str]:
