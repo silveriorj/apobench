@@ -239,8 +239,8 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     "gsm8k": 512,  # kept for reference/opt-in; not in the default DATASETS matrix
     "humaneval": 1256,  # raised from 768: adaptive extension handles overflow; 1256 gives CoT
                         # room for longer implementations without penalising most completions
-    "livebench_coding": 1024,  # LiveCodeBench problems (competitive programming) run longer/
-                                # more complex than HumanEval on average -- no empirical tuning yet.
+    "livebench_coding": 1256,  # LeetCode-style problems; 1256 matches livebench_math and gives
+                                # room for longer implementations without penalising short ones.
     "mmlu_pro": 1256,        # MCQ with 10 options; CoT + "The answer is X" fits in 1256 tokens
     "livebench_math": 1256,  # Competition math needs CoT; 1256 keeps eval fast while adaptive
                               # extension (_retry_truncated) doubles to 2512 for samples that
