@@ -200,7 +200,6 @@ class Evaluator:
 
         predictions = self._batch_generate(eval_prompts, config, system_prompt=system_prompt)
         predictions = self._retry_empty(eval_prompts, predictions, config, system_prompt)
-        predictions = self._retry_truncated(eval_prompts, predictions, config, system_prompt)
 
         # Score
         performance_vector = []
@@ -405,7 +404,6 @@ class Evaluator:
                 eval_prompts, config, system_prompt=system_prompt
             )
             predictions = self._retry_empty(eval_prompts, predictions, config, system_prompt)
-            predictions = self._retry_truncated(eval_prompts, predictions, config, system_prompt)
             for pred, sample in zip(predictions, batch):
                 target = sample["target"]
                 score = self.score_fn(pred, target)
