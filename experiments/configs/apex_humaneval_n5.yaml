@@ -2,7 +2,7 @@
 #
 # EXP-011 ran seeds 42/123/7 and got mean 0.8841 (+4.93pp vs baseline 0.8348),
 # 9/9 pairwise dominance. Adding seeds 0 and 1 brings n=5 to tighten the CI.
-# Config is identical to EXP-011 (pop=8, iter=5, sample=50, eval_max=768).
+# Config is identical to EXP-011 (pop=8, iter=5, sample=50, eval_max=2048).
 # Output dir is distinct so EXP-011 results are not overwritten.
 llm:
   backend: huggingface
@@ -17,7 +17,7 @@ evaluation:
   sample_size: 50
   full_eval_size: 115
   temperature: 0.0
-  max_new_tokens: 768
+  max_new_tokens: 2048
   batch_size: 16
   racing_enabled: true
   racing_confidence: 0.05

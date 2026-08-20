@@ -12,7 +12,7 @@
 # IMPORTANT: dev=33 is small. After holdout reservation (~30% = ~10 items),
 # optimization pool is ~23 items — HoldoutSelectionMixin will fall back to
 # single-pool selection (below MIN_HOLDOUT_N=12). This is fine; log and note.
-# eval_max_new_tokens=768 (same as HumanEval — LeetCode completions are longer).
+# eval_max_new_tokens=2048 (same as HumanEval — LeetCode completions are longer).
 #
 # full_eval_size capped at 92 (total test available); runner handles overflow.
 llm:
@@ -28,7 +28,7 @@ evaluation:
   sample_size: 50
   full_eval_size: 115      # runner will use min(115, len(test)) = 92
   temperature: 0.0
-  max_new_tokens: 768
+  max_new_tokens: 2048
   batch_size: 8            # smaller batch: subprocess execution per sample is slow
   racing_enabled: true
   racing_confidence: 0.05
