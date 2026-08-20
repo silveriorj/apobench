@@ -1,0 +1,44 @@
+# EXP-024: APEX+Pareto on HumanEval, seeds 0 + 1 (extending EXP-011 to n=5).
+#
+# EXP-011 ran seeds 42/123/7 and got mean 0.8841 (+4.93pp vs baseline 0.8348),
+# 9/9 pairwise dominance. Adding seeds 0 and 1 brings n=5 to tighten the CI.
+# Config is identical to EXP-011 (pop=8, iter=5, sample=50, eval_max=768).
+# Output dir is distinct so EXP-011 results are not overwritten.
+llm:
+  backend: huggingface
+  model_name: Qwen/Qwen3-4B-Instruct-2507
+  device: auto
+  dtype: auto
+  max_new_tokens: 1512
+  batch_size: 6
+  thinking_mode: false
+
+evaluation:
+  sample_size: 50
+  full_eval_size: 115
+  temperature: 0.0
+  max_new_tokens: 768
+  batch_size: 16
+  racing_enabled: true
+  racing_confidence: 0.05
+  racing_min_samples: 10
+
+optimizer:
+  population_size: 8
+  seed_prompt: ""
+  num_iterations: 5
+  params:
+    frontier_pull_prob: 0.5
+
+output_dir: outputs/humaneval_apex_pareto_n5
+seed: 0
+verbose: true
+
+budget:
+  time_seconds: 7200
+  max_calls: 5000
+  max_total_tokens: 5000000
+  max_generations: 5
+  early_stop_patience: 3
+
+seeds: [0, 1]
