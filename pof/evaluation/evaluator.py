@@ -10,9 +10,35 @@ import math
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
+import re
+
 from pof.core.types import EvalResult, GenerationConfig
 from pof.evaluation.scoring import ScoreFunction, create_score_function
 from pof.llm.base import BaseLLM
+
+
+def _has_final_answer(text: str) -> bool:
+    """True if text contains a recognizable final-answer marker.
+
+    Used by _retry_truncated to distinguish 'hit the token limit mid-computation'
+    from 'finished but answered incorrectly'.
+    """
+    if not text:
+        return False
+    if re.search(r"\\boxed\{", text):
+        return True
+    if re.search(r"<solution>", text, re.IGNORECASE):
+        return True
+    if re.search(r"[Tt]he answer is\s+\S", text):
+        return True
+    if re.search(r"(?:^|\n)Answer:\s+\S", text, re.MULTILINE):
+        return True
+    if re.search(r"####\s+\S", text):
+        return True
+    # Trailing digits (math_comp AIME: model ends response with "025")
+    if re.search(r"\d{1,4}\s*$", text.strip()):
+        return True
+    return False
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +200,7 @@ class Evaluator:
 
         predictions = self._batch_generate(eval_prompts, config, system_prompt=system_prompt)
         predictions = self._retry_empty(eval_prompts, predictions, config, system_prompt)
+        predictions = self._retry_truncated(eval_prompts, predictions, config, system_prompt)
 
         # Score
         performance_vector = []
@@ -378,6 +405,7 @@ class Evaluator:
                 eval_prompts, config, system_prompt=system_prompt
             )
             predictions = self._retry_empty(eval_prompts, predictions, config, system_prompt)
+            predictions = self._retry_truncated(eval_prompts, predictions, config, system_prompt)
             for pred, sample in zip(predictions, batch):
                 target = sample["target"]
                 score = self.score_fn(pred, target)
@@ -465,6 +493,59 @@ class Evaluator:
         out = list(predictions)
         for i, r in zip(empty_idx, retried):
             out[i] = r
+        return out
+
+    def _retry_truncated(
+        self,
+        eval_prompts: List[str],
+        predictions: List[str],
+        config: GenerationConfig,
+        system_prompt: Optional[str],
+        hard_cap: int = 4096,
+    ) -> List[str]:
+        """Extend generation for responses that hit the token limit mid-computation.
+
+        A response is considered truncated when it has no final-answer marker
+        (\\boxed{}, 'the answer is', 'Answer:', '####', '<solution>', trailing
+        digits) AND its length exceeds ~1.5× the base token budget in chars
+        (math text averages ~2 chars/token, so max_new_tokens × 3 chars ≈ the
+        full budget; 1.5× catches responses that consumed most of it).
+
+        Re-generates only the truncated responses with 2× the base token budget,
+        capped at hard_cap. Calls that already have max_new_tokens ≥ hard_cap
+        are returned unchanged.
+        """
+        if config.max_new_tokens >= hard_cap:
+            return predictions
+
+        extended_max = min(config.max_new_tokens * 2, hard_cap)
+        # ~2 chars/token for math-heavy text; 1.5× leaves a margin so short
+        # responses that answered quickly are not needlessly retried.
+        truncation_threshold = config.max_new_tokens * 1.5
+
+        needs_ext = [
+            i for i, pred in enumerate(predictions)
+            if not _has_final_answer(pred) and len(pred or "") > truncation_threshold
+        ]
+        if not needs_ext:
+            return predictions
+
+        ext_config = GenerationConfig(
+            max_new_tokens=extended_max,
+            temperature=config.temperature,
+            do_sample=config.do_sample,
+        )
+        retry_prompts = [eval_prompts[i] for i in needs_ext]
+        extended = self.llm.generate_batch(
+            retry_prompts, ext_config, system_prompt=system_prompt
+        )
+        logger.info(
+            f"[Eval] extended {len(needs_ext)} truncated response(s) "
+            f"{config.max_new_tokens} → {extended_max} tokens"
+        )
+        out = list(predictions)
+        for i, ext_pred in zip(needs_ext, extended):
+            out[i] = ext_pred
         return out
 
     def _format_eval_prompt(self, instruction: str, input_text: str) -> str:
