@@ -241,9 +241,9 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
                        # 768 loses only 5/1725 correct Qwen3-4B answers vs 1024, 0 for Llama/Gemma
     "livebench_coding": 1024,  # LiveCodeBench problems (competitive programming) run longer/
                                 # more complex than HumanEval on average -- no empirical tuning yet.
-    "livebench_math": 2048,  # Competition math needs CoT to reach a final answer (at 64 tokens
-                              # the model can't compute anything). 2048 is the project standard cap;
-                              # some olympiad problems (3000+ tokens) will truncate but the
+    "livebench_math": 1256,  # Competition math needs CoT; 1256 keeps eval fast while adaptive
+                              # extension (_retry_truncated) doubles to 2512 for samples that
+                              # truncate mid-computation. Operators run at llm.max_new_tokens=1512
                               # AMPS_Hard and most AIME problems finish within this budget.
 }
 
