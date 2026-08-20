@@ -1,20 +1,10 @@
-# EXP-027: APEX+Pareto on LiveBench Coding, Qwen3-4B.
+# EXP-028: APEX+Pareto on LiveBench Coding, Qwen3-4B, 5 seeds.
 #
-# New dataset — no prior APO results exist. Comparison strategy:
-#   - Primary: vs. baseline_seed
-#   - Secondary: published Qwen3-4B LiveBench coding scores (where known)
-#   - No other-method comparison
-#
-# Dataset: livebench/coding (HF), ~128 problems (LeetCode-style functional).
-#   Splits (small-dataset branch): 92 test, 33 dev, 3 train.
-#   task_type: "code" — subprocess execution scorer, all-or-nothing per problem.
-#
-# IMPORTANT: dev=33 is small. After holdout reservation (~30% = ~10 items),
-# optimization pool is ~23 items — HoldoutSelectionMixin will fall back to
-# single-pool selection (below MIN_HOLDOUT_N=12). This is fine; log and note.
-# eval_max_new_tokens=2048 (same as HumanEval — LeetCode completions are longer).
-#
-# full_eval_size capped at 92 (total test available); runner handles overflow.
+# livebench/coding: 128 LeetCode-style problems with public + private test cases.
+# 50/50 dev/test split (--dev-test-split 0.5): 8 train, ~60 dev, ~60 test.
+# task_type=code; scoring via functional test execution (_score_livecodebench).
+# Eval cap: 1256 tokens (hard cap, no adaptive extension).
+# Launch with: --dev-test-split 0.5
 llm:
   backend: huggingface
   model_name: Qwen/Qwen3-4B-Instruct-2507
@@ -26,10 +16,10 @@ llm:
 
 evaluation:
   sample_size: 50
-  full_eval_size: 115      # runner will use min(115, len(test)) = 92
+  full_eval_size: 60
   temperature: 0.0
-  max_new_tokens: 2048
-  batch_size: 8            # smaller batch: subprocess execution per sample is slow
+  max_new_tokens: 1256
+  batch_size: 16
   racing_enabled: true
   racing_confidence: 0.05
   racing_min_samples: 10
@@ -46,10 +36,10 @@ seed: 42
 verbose: true
 
 budget:
-  time_seconds: 10800      # 3h — subprocess execution adds wall-clock vs. HumanEval
+  time_seconds: 7200
   max_calls: 5000
   max_total_tokens: 5000000
   max_generations: 5
   early_stop_patience: 3
 
-seeds: [42, 123, 7]
+seeds: [42, 123, 7, 0, 1]

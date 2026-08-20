@@ -171,7 +171,7 @@ def load_dataset_by_name(
     elif name.lower() == "humaneval":
         return _load_humaneval(num_samples, seed)
     elif name.lower() in ("livebench_coding", "livebench/coding", "livecodebench"):
-        return _load_livebench_coding(num_samples, seed)
+        return _load_livebench_coding(num_samples, seed, dev_test_split=dev_test_split)
     elif name.lower() in ("mmlu_pro", "mmlu-pro", "mmlupro"):
         return _load_mmlu_pro(task, num_samples, seed)
     elif name.endswith(".json") or Path(name).exists():
@@ -548,7 +548,7 @@ def _decode_lcb_private_tests(raw: str) -> list:
         return []
 
 
-def _load_livebench_coding(num_samples: int, seed: int) -> TaskDataset:
+def _load_livebench_coding(num_samples: int, seed: int, dev_test_split: float = 0.0) -> TaskDataset:
     """Load LiveBench's coding category (HF: livebench/coding) —
     LiveCodeBench-sourced problems, functional (LeetCode-style) or
     stdin/stdout test cases. See _score_livecodebench (scoring.py) for how
@@ -624,13 +624,18 @@ def _load_livebench_coding(num_samples: int, seed: int) -> TaskDataset:
     rng = random.Random(TEST_SPLIT_SEED)
     rng.shuffle(all_samples)
 
-    # Only ~128 problems total -- always hits the small-task branch.
-    if len(all_samples) >= 8 + 50 + 115:
-        n_train = 8
+    # ~128 problems total. Support 50/50 split via dev_test_split parameter.
+    n_train = 8 if len(all_samples) >= 8 + 20 else 3
+    if dev_test_split > 0.0:
+        pool = len(all_samples) - n_train
+        n_dev = max(1, round(pool * dev_test_split))
+        n_test = pool - n_dev
+    elif len(all_samples) >= 8 + 50 + 115:
         n_test = min(115, max(1, len(all_samples) - n_train - 50))
+        n_dev = len(all_samples) - n_test - n_train
     else:
-        n_train = 3
         n_test = min(115, max(1, len(all_samples) - n_train - 33))
+        n_dev = len(all_samples) - n_test - n_train
 
     test = all_samples[:n_test]
     _rest = all_samples[n_test:]
