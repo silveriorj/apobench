@@ -1,10 +1,10 @@
 # EXP-028: APEX+Pareto on LiveBench Coding, Qwen3-4B, 5 seeds.
 #
 # livebench/coding: 128 LeetCode-style problems with public + private test cases.
-# 50/50 dev/test split (--dev-test-split 0.5): 8 train, ~60 dev, ~60 test.
+# 30/70 dev/test split (--dev-test-split 0.3): 8 train, ~36 dev, ~84 test.
+# Opt pool ~25 (after holdout slice) → faster per-candidate eval (~6 min).
 # task_type=code; scoring via functional test execution (_score_livecodebench).
-# Eval cap: 1256 tokens (hard cap, no adaptive extension).
-# Launch with: --dev-test-split 0.5
+# Eval cap: 1256 tokens. Launch with: --dev-test-split 0.3
 llm:
   backend: huggingface
   model_name: Qwen/Qwen3-4B-Instruct-2507
@@ -15,8 +15,8 @@ llm:
   thinking_mode: false
 
 evaluation:
-  sample_size: 50
-  full_eval_size: 60
+  sample_size: 25
+  full_eval_size: 84
   temperature: 0.0
   max_new_tokens: 1256
   batch_size: 16
