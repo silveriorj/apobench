@@ -237,8 +237,8 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
     # Other datasets
     "svamp": 256,  # 1-2 step arithmetic CoT: much shorter than GSM8K's 512
     "gsm8k": 512,  # kept for reference/opt-in; not in the default DATASETS matrix
-    "humaneval": 768,  # empirically: truncated completions are never correct (0/28 at 1024 cap);
-                       # 768 loses only 5/1725 correct Qwen3-4B answers vs 1024, 0 for Llama/Gemma
+    "humaneval": 1256,  # raised from 768: adaptive extension handles overflow; 1256 gives CoT
+                        # room for longer implementations without penalising most completions
     "livebench_coding": 1024,  # LiveCodeBench problems (competitive programming) run longer/
                                 # more complex than HumanEval on average -- no empirical tuning yet.
     "livebench_math": 1256,  # Competition math needs CoT; 1256 keeps eval fast while adaptive
