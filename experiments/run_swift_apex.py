@@ -216,13 +216,15 @@ GEMINI_MODELS: Dict[str, Dict[str, Any]] = {
 # MCQ/boolean/color tasks: single word/letter → 16 is sufficient.
 # SVAMP/HumanEval use different system prompts that allow CoT/code output.
 EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
-    # BBH — 32-64 tokens: sufficient for JSON {"answer": "X"} with no CoT.
+    # BBH — raised to 2048 (2026-08-20) so the model can reason through
+    # logic tasks before giving the final answer. At 32 tokens only the
+    # JSON {"answer": "X"} shell fits; no reasoning trace.
     "dyck_languages": 64,
-    "boolean_expressions": 32,
-    "causal_judgement": 32,
-    "disambiguation_qa": 32,
-    "formal_fallacies": 32,
-    "hyperbaton": 32,
+    "boolean_expressions": 2048,
+    "causal_judgement": 2048,
+    "disambiguation_qa": 2048,
+    "formal_fallacies": 2048,
+    "hyperbaton": 2048,
     "logical_deduction_five_objects": 32,
     "penguins_in_a_table": 32,  # kept for reference; not in the default matrix
     "reasoning_about_colored_objects": 32,
@@ -239,7 +241,10 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
                        # 768 loses only 5/1725 correct Qwen3-4B answers vs 1024, 0 for Llama/Gemma
     "livebench_coding": 1024,  # LiveCodeBench problems (competitive programming) run longer/
                                 # more complex than HumanEval on average -- no empirical tuning yet.
-    "livebench_math": 64,   # numeric/symbolic answers; same ceiling as math eval configs.
+    "livebench_math": 4096,  # Competition math (AIME/USAMO) needs full CoT to reach a final
+                              # answer. At 64 tokens the model can't compute anything. AMPS_Hard
+                              # integral derivations need ~900 tokens; olympiad formula ordering
+                              # needs ~3000. Measured 2026-08-20.
 }
 
 # Default fallback when task is not listed above
