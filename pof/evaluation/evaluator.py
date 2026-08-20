@@ -536,9 +536,14 @@ class Evaluator:
             do_sample=config.do_sample,
         )
         retry_prompts = [eval_prompts[i] for i in needs_ext]
-        extended = self.llm.generate_batch(
-            retry_prompts, ext_config, system_prompt=system_prompt
-        )
+        # Use sub-batches of 4 to avoid OOM at 2× token budget.
+        retry_sub_batch = 4
+        extended = []
+        for start in range(0, len(retry_prompts), retry_sub_batch):
+            chunk = retry_prompts[start : start + retry_sub_batch]
+            extended.extend(
+                self.llm.generate_batch(chunk, ext_config, system_prompt=system_prompt)
+            )
         logger.info(
             f"[Eval] extended {len(needs_ext)} truncated response(s) "
             f"{config.max_new_tokens} → {extended_max} tokens"
