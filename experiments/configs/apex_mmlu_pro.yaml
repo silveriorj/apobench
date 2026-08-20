@@ -1,0 +1,45 @@
+# EXP-027: APEX+Pareto on MMLU-Pro, Qwen3-4B, 5 seeds.
+#
+# MMLU-Pro: 12032 hard 10-option MCQ questions across 14 categories.
+# Large pool → 115 test, 8 train, ~11909 dev — generous optimization budget.
+# Leaderboard Qwen3-4B score: ~63% (reference for absolute comparison).
+# Scoring: _score_mcq, target is letter A–J.
+# Eval cap: 1256 tokens + adaptive extension to 2512 for truncated CoT.
+llm:
+  backend: huggingface
+  model_name: Qwen/Qwen3-4B-Instruct-2507
+  device: auto
+  dtype: auto
+  max_new_tokens: 1512
+  batch_size: 6
+  thinking_mode: false
+
+evaluation:
+  sample_size: 50
+  full_eval_size: 115
+  temperature: 0.0
+  max_new_tokens: 1256
+  batch_size: 16
+  racing_enabled: true
+  racing_confidence: 0.05
+  racing_min_samples: 10
+
+optimizer:
+  population_size: 8
+  seed_prompt: ""
+  num_iterations: 5
+  params:
+    frontier_pull_prob: 0.5
+
+output_dir: outputs/mmlu_pro_apex_pareto
+seed: 42
+verbose: true
+
+budget:
+  time_seconds: 7200
+  max_calls: 5000
+  max_total_tokens: 5000000
+  max_generations: 5
+  early_stop_patience: 3
+
+seeds: [42, 123, 7, 0, 1]

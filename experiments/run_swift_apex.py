@@ -241,6 +241,7 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
                         # room for longer implementations without penalising most completions
     "livebench_coding": 1024,  # LiveCodeBench problems (competitive programming) run longer/
                                 # more complex than HumanEval on average -- no empirical tuning yet.
+    "mmlu_pro": 1256,        # MCQ with 10 options; CoT + "The answer is X" fits in 1256 tokens
     "livebench_math": 1256,  # Competition math needs CoT; 1256 keeps eval fast while adaptive
                               # extension (_retry_truncated) doubles to 2512 for samples that
                               # truncate mid-computation. Operators run at llm.max_new_tokens=1512

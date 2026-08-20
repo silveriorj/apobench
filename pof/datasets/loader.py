@@ -172,11 +172,13 @@ def load_dataset_by_name(
         return _load_humaneval(num_samples, seed)
     elif name.lower() in ("livebench_coding", "livebench/coding", "livecodebench"):
         return _load_livebench_coding(num_samples, seed)
+    elif name.lower() in ("mmlu_pro", "mmlu-pro", "mmlupro"):
+        return _load_mmlu_pro(task, num_samples, seed)
     elif name.endswith(".json") or Path(name).exists():
         return _load_json(name, num_samples, seed)
     else:
         raise DatasetError(
-            f"Unknown dataset: {name}. Use 'bbh', 'gsm8k', 'svamp', 'livebench_math', or a JSON file path."
+            f"Unknown dataset: {name}. Use 'bbh', 'gsm8k', 'svamp', 'livebench_math', 'mmlu_pro', or a JSON file path."
         )
 
 
@@ -657,6 +659,73 @@ def _load_livebench_coding(num_samples: int, seed: int) -> TaskDataset:
         test_samples=test,
         task_type="code",
         metadata={"source": "livebench/coding"},
+    )
+
+
+def _load_mmlu_pro(task: str, num_samples: int, seed: int) -> TaskDataset:
+    """Load MMLU-Pro (HF: TIGER-Lab/MMLU-Pro) — hard 10-option MCQ.
+
+    12032 test rows across 14 categories. `task` filters to a single category
+    (e.g. 'math', 'biology'); leave empty for all categories combined.
+    Input is formatted as question + lettered option list (A–J).
+    Target is the answer letter (A–J); scored by _score_mcq.
+    """
+    try:
+        from datasets import load_dataset as hf_load_dataset
+    except ImportError:
+        raise DatasetError("'datasets' package required. Run: pip install datasets")
+
+    try:
+        dataset = hf_load_dataset("TIGER-Lab/MMLU-Pro", split="test")
+    except Exception as e:
+        raise DatasetError(f"Failed to load MMLU-Pro: {e}") from e
+
+    letters = "ABCDEFGHIJ"
+
+    all_samples = []
+    for item in dataset:
+        if task and item.get("category", "") != task:
+            continue
+        question = item.get("question", "")
+        options = item.get("options", [])
+        answer = item.get("answer", "")
+        if not (question and options and answer):
+            continue
+        option_lines = "\n".join(
+            f"{letters[i]}. {opt}" for i, opt in enumerate(options) if i < len(letters)
+        )
+        input_text = f"{question}\n\n{option_lines}"
+        all_samples.append({"input": input_text, "target": answer.upper()})
+
+    if not all_samples:
+        raise DatasetError(
+            f"MMLU-Pro returned no samples (category filter: {task!r})"
+        )
+
+    rng = random.Random(TEST_SPLIT_SEED)
+    rng.shuffle(all_samples)
+
+    if len(all_samples) >= 8 + 50 + 115:
+        n_train = 8
+        n_test = min(115, max(1, len(all_samples) - n_train - 50))
+    else:
+        n_train = 3
+        n_test = min(115, max(1, len(all_samples) - n_train - 33))
+
+    test = all_samples[:n_test]
+    _rest = all_samples[n_test:]
+    random.Random(seed).shuffle(_rest)
+    train = _rest[:n_train]
+    dev = _rest[n_train:]
+
+    name = f"mmlu_pro_{task}" if task else "mmlu_pro"
+    return TaskDataset(
+        name=name,
+        train_samples=train,
+        dev_samples=dev,
+        test_samples=test,
+        task_type="mcq",
+        metadata={"source": "TIGER-Lab/MMLU-Pro", "category": task},
     )
 
 

@@ -269,5 +269,11 @@ def get_seed_prompt(
             "exactly as specified. Include only the code in your response."
         )
 
+    elif dataset.lower() in ("mmlu_pro", "mmlu-pro", "mmlupro"):
+        return (
+            "Answer the following multiple choice question. "
+            "Think step by step, then write 'The answer is X' where X is the letter of the correct option."
+        )
+
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
