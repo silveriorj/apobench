@@ -69,9 +69,22 @@ def _score_auto(prediction: str, target: str) -> int:
 
 
 def _extract_answer_is(text: str) -> Optional[str]:
-    """Extract 'The answer is X' or 'the answer is X' pattern."""
-    m = re.search(r'[Tt]he answer is\s+(.+?)(?:\s*[.\n]|$)', text.strip())
-    return m.group(1).strip() if m else None
+    """Extract final answer from common answer-marker patterns.
+
+    Matches (in priority order):
+    - 'The answer is X' / 'the answer is X'
+    - 'Answer: X' (LiveBench olympiad format)
+    - 'answer: X' (case-insensitive variant)
+    """
+    text = text.strip()
+    m = re.search(r'[Tt]he answer is\s+(.+?)(?:\s*[.\n]|$)', text)
+    if m:
+        return m.group(1).strip()
+    # LiveBench olympiad: "Answer: 1,6,7,2,3,4,5"
+    m = re.search(r'(?:^|\n)Answer:\s*(.+?)(?:\s*\n|$)', text)
+    if m:
+        return m.group(1).strip()
+    return None
 
 
 def _score_math(prediction: str, target: str) -> int:

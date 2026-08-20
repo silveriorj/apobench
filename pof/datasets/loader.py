@@ -292,13 +292,9 @@ def _load_livebench_math(task: str, num_samples: int, seed: int) -> TaskDataset:
         if task and item.get("task", "") != task:
             continue
         turns = item.get("turns") or []
+        # turns[0] is the complete prompt — for olympiad tasks it already
+        # embeds the expressions list inline (do not append expressions again).
         question = turns[0] if turns else item.get("question", "")
-        # Olympiad problems list the expressions to order in a separate field.
-        # Append them so the model sees the full problem, matching LiveBench's
-        # official evaluation protocol.
-        expressions = (item.get("expressions") or "").strip()
-        if expressions:
-            question = question + "\n\n" + expressions
         target = item.get("ground_truth", "")
         if question and target:
             all_samples.append({"input": question, "target": str(target)})
