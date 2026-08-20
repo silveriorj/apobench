@@ -25,7 +25,7 @@ evaluation:
   racing_min_samples: 10
 
 optimizer:
-  population_size: 8
+  population_size: 6
   seed_prompt: ""
   num_iterations: 5
   params:
