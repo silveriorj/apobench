@@ -239,6 +239,7 @@ EVAL_MAX_NEW_TOKENS: Dict[str, int] = {
                        # 768 loses only 5/1725 correct Qwen3-4B answers vs 1024, 0 for Llama/Gemma
     "livebench_coding": 1024,  # LiveCodeBench problems (competitive programming) run longer/
                                 # more complex than HumanEval on average -- no empirical tuning yet.
+    "livebench_math": 64,   # numeric/symbolic answers; same ceiling as math eval configs.
 }
 
 # Default fallback when task is not listed above
@@ -339,6 +340,10 @@ DATASETS = {
     "livebench_coding": {
         "tasks": [""],  # Single task (LiveCodeBench-sourced problems)
         "task_type": "text",
+    },
+    "livebench_math": {
+        "tasks": [""],  # Single task (LiveBench math problems)
+        "task_type": "math",
     },
 }
 
