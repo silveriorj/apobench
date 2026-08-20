@@ -25,7 +25,7 @@ evaluation:
   sample_size: 50
   full_eval_size: 115
   temperature: 0.0
-  max_new_tokens: 512
+  max_new_tokens: 2048
   batch_size: 16
   racing_enabled: true
   racing_confidence: 0.05

@@ -28,7 +28,7 @@ evaluation:
   sample_size: 50
   full_eval_size: 115
   temperature: 0.0
-  max_new_tokens: 32      # BBH tasks use short direct answers
+  max_new_tokens: 2048      # BBH tasks use short direct answers
   batch_size: 16
   racing_enabled: true
   racing_confidence: 0.05
