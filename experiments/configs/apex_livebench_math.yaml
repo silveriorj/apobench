@@ -11,7 +11,7 @@
 #
 # Note: livebench_math dev=245 gives a healthy opt pool and holdout; expect
 # the MDE to sit at a similar level to HumanEval (~9-10pp on n=115).
-# eval_max_new_tokens=64 because livebench math answers are compact.
+# eval_max_new_tokens=512: competition math (AMC/AIME) needs room for boxed answers.
 llm:
   backend: huggingface
   model_name: Qwen/Qwen3-4B-Instruct-2507
@@ -25,7 +25,7 @@ evaluation:
   sample_size: 50
   full_eval_size: 115
   temperature: 0.0
-  max_new_tokens: 64
+  max_new_tokens: 512
   batch_size: 16
   racing_enabled: true
   racing_confidence: 0.05
