@@ -1,0 +1,32 @@
+# Same shape as examples/01_quickstart_single_run/config.yaml — only the
+# dataset.name differs (points at sample_data.json, no dataset.task needed).
+llm:
+  backend: huggingface
+  model_name: Qwen/Qwen3-4B-Instruct-2507
+  device: auto
+  dtype: auto
+  max_new_tokens: 512
+  thinking_mode: false
+
+evaluation:
+  sample_size: 6
+  full_eval_size: 4
+  temperature: 0.0
+  max_new_tokens: 16
+
+optimizer:
+  method: see
+  population_size: 4
+  seed_prompt: "Answer yes or no."
+
+dataset:
+  name: examples/04_custom_dataset/sample_data.json
+
+output_dir: outputs/04_custom_dataset
+seed: 42
+verbose: true
+
+budget:
+  time_seconds: 300
+  max_calls: 100
+  max_generations: 2

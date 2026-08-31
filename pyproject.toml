@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pof"
+version = "1.0.0"
+description = "APOBench — Automatic Prompt Optimization Benchmark (low-cost, auditable prompt evolution)"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9,<3.14"
+authors = [
+    {name = "Silverio RJ"},
+]
+dependencies = [
+    "torch>=2.0",
+    "transformers>=4.51,<4.54",  # >=4.51 for native Qwen3 support; <4.54 because Phi-4-mini-instruct's
+                                  # bundled remote code imports transformers.utils.LossKwargs, removed in 4.54
+    "numpy>=1.24",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "datasets>=2.14",
+    "openai>=1.0",
+    "tqdm>=4.65",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.1",
+]
+
+[project.scripts]
+pof = "pof.cli:main"
+
+# Extension contract for third-party packages (see pof/plugins.py). A package
+# that wants to add an optimizer, dataset, scorer, or LLM backend declares it
+# in ITS OWN pyproject.toml, e.g.:
+#
+#   [project.entry-points."apobench.optimizers"]
+#   my_method = "my_pkg.my_method:MyOptimizer"
+#
+# APOBench discovers these groups at runtime; nothing needs to be added here
+# for a third party to register. Groups: apobench.optimizers, apobench.datasets,
+# apobench.scorers, apobench.backends.
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pof*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.pytest.ini_options]
+# "pof" rather than "pof/optimizers": several suites live next to the code
+# they test rather than under tests/, and naming packages one at a time has
+# now silently dropped tests twice -- first pof/optimizers/test_apex_bandit.py,
+# then pof/evaluation/test_racing_config.py. Collecting the whole package
+# means adding a suite never again requires remembering to edit this line.
+testpaths = ["tests", "pof"]
+pythonpath = ["."]

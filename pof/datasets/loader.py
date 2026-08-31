@@ -1,0 +1,981 @@
+"""Dataset loader — BigBench and custom JSON datasets.
+
+Ported from Projeto's TaskDataset with unified interface for:
+- BigBench-Hard (BBH) tasks via HuggingFace datasets
+- Custom JSON datasets (local files)
+- Train/dev/test split management
+- Few-shot example selection
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import random
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from pof.core.exceptions import DatasetError
+
+logger = logging.getLogger(__name__)
+
+# Seed used to carve the held-out TEST split. Deliberately CONSTANT: the
+# test set must be identical across run seeds so their scores are
+# comparable. Run seeds still vary train/dev, which is the optimizer-facing
+# randomness the seed sweep is meant to measure. Value 42 preserves the
+# test set that seed-42 runs already used.
+TEST_SPLIT_SEED = 42
+
+# BigBench-Hard tasks
+BBH_TASKS = [
+    "boolean_expressions",
+    "causal_judgement",
+    "date_understanding",
+    "disambiguation_qa",
+    "dyck_languages",
+    "formal_fallacies",
+    "geometric_shapes",
+    "hyperbaton",
+    "logical_deduction_five_objects",
+    "logical_deduction_seven_objects",
+    "logical_deduction_three_objects",
+    "movie_recommendation",
+    "multistep_arithmetic_two",
+    "navigate",
+    "object_counting",
+    "penguins_in_a_table",
+    "reasoning_about_colored_objects",
+    "ruin_names",
+    "salient_translation_error_detection",
+    "snarks",
+    "sports_understanding",
+    "temporal_sequences",
+    "tracking_shuffled_objects_five_objects",
+    "tracking_shuffled_objects_seven_objects",
+    "tracking_shuffled_objects_three_objects",
+    "web_of_lies",
+    "word_sorting",
+]
+
+
+def _assign_ids(name: str, samples: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Stamp every sample with a stable, content-derived id.
+
+    Paired significance tests (McNemar) need to know which *instance* each
+    method got right. Aligning two runs by list position silently breaks the
+    moment a split ratio, a shuffle seed or a sample cap changes -- position 7
+    is then a different question in each run, and the pairing compares unrelated
+    answers.
+
+    The id is a hash of the input text, so the same question carries the same id
+    across every run, split and dataset revision. That is strictly stronger than
+    the positional scheme (`gsm8k_test_0`) used elsewhere, which is stable only
+    while the ordering is.
+
+    Idempotent: samples that already carry an id are left alone.
+    """
+    out = []
+    for s in samples:
+        if "id" in s:
+            out.append(s)
+            continue
+        digest = hashlib.sha1(str(s.get("input", "")).encode("utf-8")).hexdigest()[:10]
+        out.append({**s, "id": f"{name}:{digest}"})
+    return out
+
+
+class TaskDataset:
+    """Unified dataset interface for prompt optimization tasks.
+
+    Manages train/dev/test splits and provides samples in a standard format:
+    [{"input": str, "target": str}, ...]
+    """
+
+    def __init__(
+        self,
+        name: str,
+        train_samples: List[Dict[str, str]],
+        dev_samples: List[Dict[str, str]],
+        test_samples: List[Dict[str, str]],
+        task_type: str = "auto",
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        self.name = name
+        self.train_samples = _assign_ids(name, train_samples)
+        self.dev_samples = _assign_ids(name, dev_samples)
+        self.test_samples = _assign_ids(name, test_samples)
+        self.task_type = task_type
+        self.metadata = metadata or {}
+
+    @property
+    def num_train(self) -> int:
+        return len(self.train_samples)
+
+    @property
+    def num_dev(self) -> int:
+        return len(self.dev_samples)
+
+    @property
+    def num_test(self) -> int:
+        return len(self.test_samples)
+
+    def get_few_shot_examples(self, n: int = 3, seed: int = 42) -> List[Dict[str, str]]:
+        """Get n few-shot examples from training set."""
+        rng = random.Random(seed)
+        if n >= len(self.train_samples):
+            return self.train_samples[:]
+        return rng.sample(self.train_samples, n)
+
+    def get_eval_samples(
+        self, split: str = "dev", n: Optional[int] = None, seed: int = 42
+    ) -> List[Dict[str, str]]:
+        """Get evaluation samples from specified split.
+
+        Args:
+            split: 'train', 'dev', or 'test'.
+            n: Number of samples (None = all).
+            seed: Random seed for sampling.
+        """
+        if split == "train":
+            samples = self.train_samples
+        elif split == "dev":
+            samples = self.dev_samples
+        elif split == "test":
+            samples = self.test_samples
+        else:
+            raise DatasetError(f"Unknown split: {split}")
+
+        if n is not None and n < len(samples):
+            rng = random.Random(seed)
+            return rng.sample(samples, n)
+        return samples[:]
+
+    def format_few_shot_prompt(
+        self, instruction: str, n_examples: int = 3, seed: int = 42
+    ) -> str:
+        """Format instruction with few-shot examples appended."""
+        examples = self.get_few_shot_examples(n_examples, seed)
+        if not examples:
+            return instruction
+
+        example_text = "\n\n".join(
+            f"Input: {ex['input']}\nOutput: {ex['target']}"
+            for ex in examples
+        )
+        return f"{instruction}\n\nExamples:\n{example_text}"
+
+
+def load_dataset_by_name(
+    name: str,
+    task: str = "",
+    num_samples: int = 100,
+    seed: int = 42,
+    dev_test_split: float = 0.0,
+) -> TaskDataset:
+    """Load a dataset by name.
+
+    Args:
+        name: Dataset name ('bbh', 'json', or path to JSON file).
+        task: Specific task within dataset (e.g., BBH task name).
+        num_samples: Total samples to load.
+        seed: Random seed.
+        dev_test_split: Fraction of the post-train pool given to dev (rest to
+            test). 0.0 (default) preserves the original fixed-size split
+            (test capped at 115, dev gets the remainder). Only applied by
+            BBH loading; other datasets ignore it.
+
+    Returns:
+        TaskDataset instance.
+    """
+    # Third-party datasets first, so a package can add one without editing this
+    # dispatch. The loader receives the same arguments the built-ins take and
+    # must return a TaskDataset.
+    from pof.plugins import DATASET_GROUP, discover
+
+    external = discover(DATASET_GROUP)
+    if name.lower() in external:
+        return external[name.lower()](
+            task=task, num_samples=num_samples, seed=seed,
+            dev_test_split=dev_test_split,
+        )
+
+    if name.lower() == "bbh":
+        return _load_bbh(task, num_samples, seed, dev_test_split=dev_test_split)
+    elif name.lower() in ("livebench_math", "livebench/math"):
+        return _load_livebench_math(task, num_samples, seed, dev_test_split=dev_test_split)
+    elif name.lower() == "gsm8k":
+        return _load_gsm8k(num_samples, seed, dev_test_split=dev_test_split)
+    elif name.lower() == "svamp":
+        return _load_svamp(num_samples, seed)
+    elif name.lower() == "humaneval":
+        return _load_humaneval(num_samples, seed, dev_test_split=dev_test_split)
+    elif name.lower() in ("livebench_coding", "livebench/coding", "livecodebench"):
+        return _load_livebench_coding(num_samples, seed, dev_test_split=dev_test_split)
+    elif name.lower() in ("mmlu_pro", "mmlu-pro", "mmlupro"):
+        return _load_mmlu_pro(task, num_samples, seed, dev_test_split=dev_test_split)
+    elif name.endswith(".json") or Path(name).exists():
+        return _load_json(name, num_samples, seed)
+    else:
+        raise DatasetError(
+            f"Unknown dataset: {name}. Built-in: 'bbh', 'gsm8k', 'svamp', "
+            f"'livebench_math', 'livebench_coding', 'mmlu_pro', 'humaneval', or "
+            f"a JSON file path. Third-party: {sorted(external) or 'none installed'} "
+            "(add via the 'apobench.datasets' entry point group)."
+        )
+
+
+def _load_bbh(task: str, num_samples: int, seed: int, dev_test_split: float = 0.0) -> TaskDataset:
+    """Load a BigBench-Hard task from HuggingFace."""
+    try:
+        from datasets import load_dataset as hf_load_dataset
+    except ImportError:
+        raise DatasetError("'datasets' package required. Run: pip install datasets")
+
+    if not task:
+        # Pick a random task
+        rng = random.Random(seed)
+        task = rng.choice(BBH_TASKS)
+        logger.info(f"No task specified, randomly selected: {task}")
+
+    if task not in BBH_TASKS:
+        raise DatasetError(
+            f"Unknown BBH task: {task}. Available: {BBH_TASKS}"
+        )
+
+    # Prefer a script-free dataset to comply with datasets>=5 restrictions
+    try:
+        # Community mirror with per-task subsets and no loading script
+        dataset = hf_load_dataset("lukaemon/bbh", task)
+    except Exception as e1:
+        # Fallback to original repo if available (may fail on newer datasets versions)
+        try:
+            dataset = hf_load_dataset("maveriq/bigbenchhard", task)
+        except Exception as e2:
+            raise DatasetError(
+                f"Failed to load BBH task '{task}': lukaemon/bbh error: {e1}; "
+                f"maveriq/bigbenchhard error: {e2}. "
+                "Tip: use datasets<3.0 for script-based loaders or switch to lukaemon/bbh."
+            ) from e2
+
+    # BBH has a single 'train' split
+    split_data = dataset["train"] if "train" in dataset else dataset[list(dataset.keys())[0]]
+
+    # Convert to standard format
+    all_samples = []
+    for item in split_data:
+        sample = {
+            "input": item.get("input", item.get("question", "")),
+            "target": item.get("target", item.get("answer", "")),
+        }
+        if sample["input"] and sample["target"]:
+            all_samples.append(sample)
+
+    # lukaemon/bbh bakes a full per-task instruction into EVERY example's
+    # `input` field for many (not all) BBH tasks -- e.g. dyck_languages'
+    # input is "Complete the rest of the sequence, making sure that the
+    # parentheses are closed properly. Input: [ ( ...", repeated verbatim
+    # before the actual varying sequence. Measured 2026-08-30: dyck_languages
+    # 96/99 chars shared, causal_judgement 83, logical_deduction_five_objects
+    # 151, disambiguation_qa 148, hyperbaton 61, word_sorting 47,
+    # formal_fallacies 45 -- boolean_expressions has none (bare expression).
+    # This duplicates what the task's seed_prompt already supplies (a
+    # completely separate source, fetch_bbh_prompt_v2 -- not derived from
+    # this dataset at all): the optimizer's evolving instruction gets
+    # concatenated in front of a SECOND, fixed, non-optimizable instruction
+    # (evaluator.py's _format_eval_prompt does `f"{instruction}\n\n
+    # {input_text}"`), so changing the optimized prompt has reduced effect
+    # on exactly the tasks where this baked-in text is longest. Strip the
+    # longest common prefix across all examples of a task before it ever
+    # reaches search -- standard practice in prompt-optimization work
+    # (OPRO, APE, ProTeGi): the optimized instruction is the sole task
+    # framing, `input` carries only the per-example varying content.
+    if all_samples:
+        import re as _re
+        from os.path import commonprefix as _commonprefix
+        shared_prefix = _commonprefix([s["input"] for s in all_samples])
+        if len(shared_prefix) > 10:
+            # The seed prompt (fetch_bbh_prompt_v2) is itself few-shot for
+            # some tasks, and its own exemplars end in a structural label
+            # ("QUESTION: ...Input: X\nANSWER: Y") that the model pattern-
+            # matches against. Stripping that label off the real test
+            # instance too breaks the format the seed's own examples just
+            # established. Keep a trailing "Label: " if the shared prefix
+            # ends with one; only strip the instruction text before it.
+            label_match = _re.search(r"(\b\w+:\s*)$", shared_prefix)
+            strip_len = len(shared_prefix) - len(label_match.group(1)) if label_match else len(shared_prefix)
+            logger.info(
+                f"BBH {task}: stripping {strip_len}-char preamble baked into "
+                f"every example's input field: {shared_prefix[:strip_len]!r}"
+                + (f" (kept trailing label {label_match.group(1)!r})" if label_match else "")
+            )
+            all_samples = [
+                {**s, "input": s["input"][strip_len:].lstrip() if strip_len == len(shared_prefix)
+                       else s["input"][strip_len:]}
+                for s in all_samples
+            ]
+            all_samples = [s for s in all_samples if s["input"]]
+
+    # Shuffle with all available samples (no cap)
+    # Test split is carved with a FIXED seed so the held-out set is identical
+    # across run seeds; only train/dev vary with the run seed (see module note).
+    rng = random.Random(TEST_SPLIT_SEED)
+    rng.shuffle(all_samples)
+
+    if dev_test_split > 0.0:
+        # Even split mode: train takes a fixed few-shot pool, dev/test split
+        # the remainder by the requested ratio (e.g. 0.5 -> 50/50).
+        n_train = 8 if len(all_samples) >= 8 + 20 else 3
+        pool = len(all_samples) - n_train
+        n_dev = max(1, round(pool * dev_test_split))
+        n_test = pool - n_dev
+    elif len(all_samples) >= 8 + 50 + 115:
+        # Fixed-size splits: test is reserved first (held out, capped at 115),
+        # train takes 8, dev gets the remainder (≥50 for candidate eval).
+        n_train = 8
+        n_test = min(115, max(1, len(all_samples) - n_train - 50))
+        n_dev = len(all_samples) - n_test - n_train
+    else:
+        n_train = 3
+        n_test = min(115, max(1, len(all_samples) - n_train - 33))
+        n_dev = len(all_samples) - n_test - n_train
+
+    test = all_samples[:n_test]
+    _rest = all_samples[n_test:]
+    random.Random(seed).shuffle(_rest)   # run seed varies train/dev only
+    train = _rest[:n_train]
+    dev = _rest[n_train:]
+
+    # Detect task type
+    task_type = _detect_task_type(train)
+
+    return TaskDataset(
+        name=f"bbh_{task}",
+        train_samples=train,
+        dev_samples=dev,
+        test_samples=test,
+        task_type=task_type,
+        metadata={"source": "bigbenchhard", "task": task},
+    )
+
+
+def _load_livebench_math(
+    task: str, num_samples: int, seed: int, dev_test_split: float = 0.0
+) -> TaskDataset:
+    """Load LiveBench math (HF: livebench/math) — zero-shot competition math.
+
+    Subtasks: AMPS_Hard (numeric/expression answers), math_comp (multiple
+    choice), olympiad (fill-in). Pass `task` to filter to one subtask, or
+    leave empty for all. Targets come from `ground_truth`; scoring uses
+    final_em-style exact match on the extracted final answer (\\boxed{} aware).
+
+    `num_samples` caps the shuffled pool BEFORE any split is computed, same
+    fix as `_load_gsm8k` needed (num_samples was accepted but silently
+    ignored here -- ~250 requested would have drawn from the entire subtask
+    pool instead). `dev_test_split` mirrors `_load_bbh`/`_load_gsm8k`: when
+    set, split the capped pool by that fraction; when 0.0 (default), keep
+    the original fixed-size n_test/n_train/dev behavior below.
+    """
+    try:
+        from datasets import load_dataset as hf_load_dataset
+    except ImportError:
+        raise DatasetError("'datasets' package required. Run: pip install datasets")
+
+    try:
+        dataset = hf_load_dataset("livebench/math", split="test")
+    except Exception as e:
+        raise DatasetError(f"Failed to load livebench/math: {e}") from e
+
+    all_samples = []
+    for item in dataset:
+        if task and item.get("task", "") != task:
+            continue
+        turns = item.get("turns") or []
+        # turns[0] is the complete prompt — for olympiad tasks it already
+        # embeds the expressions list inline (do not append expressions again).
+        question = turns[0] if turns else item.get("question", "")
+        target = item.get("ground_truth", "")
+        if question and target:
+            all_samples.append({"input": question, "target": str(target)})
+
+    if not all_samples:
+        raise DatasetError(
+            f"livebench/math returned no samples (task filter: {task!r})"
+        )
+
+    # Test split is carved with a FIXED seed so the held-out set is identical
+    # across run seeds; only train/dev vary with the run seed (see module note).
+    rng = random.Random(TEST_SPLIT_SEED)
+    rng.shuffle(all_samples)
+    if num_samples:
+        all_samples = all_samples[:num_samples]
+
+    n_train = 8 if len(all_samples) >= 8 + 20 else 3
+    if dev_test_split > 0.0:
+        pool = len(all_samples) - n_train
+        n_dev = max(1, round(pool * dev_test_split))
+        n_test = pool - n_dev
+        test = all_samples[:n_test]
+        _rest = all_samples[n_test:]
+    elif len(all_samples) >= 8 + 50 + 115:
+        n_test = min(115, max(1, len(all_samples) - n_train - 50))
+        test = all_samples[:n_test]
+        _rest = all_samples[n_test:]
+    else:
+        n_test = min(115, max(1, len(all_samples) - n_train - 33))
+        test = all_samples[:n_test]
+        _rest = all_samples[n_test:]
+
+    random.Random(seed).shuffle(_rest)   # run seed varies train/dev only
+    train = _rest[:n_train]
+    dev = _rest[n_train:]
+
+    name = f"livebench_math_{task}" if task else "livebench_math"
+    return TaskDataset(
+        name=name,
+        train_samples=train,
+        dev_samples=dev,
+        test_samples=test,
+        task_type="math",
+        metadata={"source": "livebench/math", "task": task},
+    )
+
+
+def _load_gsm8k(num_samples: int, seed: int, dev_test_split: float = 0.0) -> TaskDataset:
+    """Load GSM8K (HF: openai/gsm8k) — grade-school math word problems.
+
+    HF train split (7473) → few-shot train examples (8 samples).
+    HF test split (1319)  → shuffled with a fixed seed, capped to num_samples,
+    then split into test/dev. Default (dev_test_split=0.0) keeps the original
+    fixed-size split: test capped at 115, dev gets the remainder. Pass
+    dev_test_split (e.g. 0.5) for an even split of the (possibly capped) pool
+    instead, matching _load_humaneval's convention.
+
+    Both parameters were silently accepted and ignored before this fix: a
+    caller expecting a 50/50 protocol over ~250 instances (--dev-test-split
+    0.5, num_samples: 250 in the dataset config) got a 50/50 split of the
+    *entire* 1319-item pool (~660/659) with no error or warning -- correct
+    proportionally, but far more than the config asked to spend.
+
+    Targets are the integer answer extracted from the '#### N' suffix in the
+    HF answer field, so the scorer compares against "The answer is N" format.
+    """
+    import re as _re
+
+    try:
+        from datasets import load_dataset as hf_load_dataset
+    except ImportError:
+        raise DatasetError("'datasets' package required. Run: pip install datasets")
+
+    try:
+        hf_train = hf_load_dataset("openai/gsm8k", "main", split="train")
+        hf_test = hf_load_dataset("openai/gsm8k", "main", split="test")
+    except Exception as e:
+        raise DatasetError(f"Failed to load openai/gsm8k: {e}") from e
+
+    def _extract_answer(answer_text: str) -> str:
+        m = _re.search(r"####\s*([0-9,]+)", answer_text)
+        return m.group(1).replace(",", "") if m else answer_text.strip()
+
+    # Few-shot train examples: sample 8 from HF train split
+    rng = random.Random(seed)
+    train_indices = rng.sample(range(len(hf_train)), min(8, len(hf_train)))
+    train_samples = [
+        {"input": hf_train[i]["question"], "target": _extract_answer(hf_train[i]["answer"])}
+        for i in train_indices
+    ]
+
+    # Dev + test from HF test split
+    test_samples_raw = [
+        {"input": item["question"], "target": _extract_answer(item["answer"])}
+        for item in hf_test
+    ]
+    # Fixed seed carves the held-out test set identically for every run seed;
+    # only dev is re-shuffled per run seed (train came from the HF train split).
+    random.Random(TEST_SPLIT_SEED).shuffle(test_samples_raw)
+
+    # Cap to num_samples BEFORE splitting, same fixed-seed order so the subset
+    # is identical across run seeds. Without this a 50/50 split of the full
+    # 1319-item pool gives ~660/659 regardless of what num_samples asked for
+    # -- correct proportionally, but far more than a config requesting 250
+    # intended to spend.
+    if num_samples > 0:
+        test_samples_raw = test_samples_raw[:num_samples]
+
+    if dev_test_split > 0.0:
+        n_dev = max(1, round(len(test_samples_raw) * dev_test_split))
+        n_test = len(test_samples_raw) - n_dev
+    else:
+        n_test = min(115, max(1, len(test_samples_raw) - 50))
+    test = test_samples_raw[:n_test]
+    dev = test_samples_raw[n_test:]
+    random.Random(seed).shuffle(dev)
+
+    logger.info(f"GSM8K loaded: {len(train_samples)} train, {len(dev)} dev, {len(test)} test")
+
+    return TaskDataset(
+        name="gsm8k",
+        train_samples=train_samples,
+        dev_samples=dev,
+        test_samples=test,
+        task_type="math",
+        metadata={"source": "openai/gsm8k"},
+    )
+
+
+def _load_svamp(num_samples: int, seed: int) -> TaskDataset:
+    """Load SVAMP (HF: ChilleD/SVAMP) — 1-2 step arithmetic word problems.
+
+    A faster, simpler complement to GSM8K (2-8 reasoning steps): shorter
+    questions and shorter chains of thought, so both generation and
+    evaluation are cheaper per sample. HF train split (700) feeds few-shot
+    examples; HF test split (300) is shuffled then split into test (115)
+    and dev (rest). Targets are plain numeric strings (int-formatted when
+    whole), matching GSM8K's '#### N' convention so the shared 'math'
+    scorer (_score_math) needs no changes.
+    """
+    try:
+        from datasets import load_dataset as hf_load_dataset
+    except ImportError:
+        raise DatasetError("'datasets' package required. Run: pip install datasets")
+
+    try:
+        hf_train = hf_load_dataset("ChilleD/SVAMP", split="train")
+        hf_test = hf_load_dataset("ChilleD/SVAMP", split="test")
+    except Exception as e:
+        raise DatasetError(f"Failed to load ChilleD/SVAMP: {e}") from e
+
+    def _format_answer(value) -> str:
+        num = float(value)
+        return str(int(num)) if num.is_integer() else str(num)
+
+    rng = random.Random(seed)
+    train_indices = rng.sample(range(len(hf_train)), min(8, len(hf_train)))
+    train_samples = [
+        {"input": hf_train[i]["question_concat"], "target": _format_answer(hf_train[i]["Answer"])}
+        for i in train_indices
+    ]
+
+    test_samples_raw = [
+        {"input": item["question_concat"], "target": _format_answer(item["Answer"])}
+        for item in hf_test
+    ]
+    # Fixed seed carves the held-out test set identically for every run seed;
+    # only dev is re-shuffled per run seed (train came from the HF train split).
+    random.Random(TEST_SPLIT_SEED).shuffle(test_samples_raw)
+
+    n_test = min(115, max(1, len(test_samples_raw) - 50))
+    test = test_samples_raw[:n_test]
+    dev = test_samples_raw[n_test:]
+    random.Random(seed).shuffle(dev)
+
+    logger.info(f"SVAMP loaded: {len(train_samples)} train, {len(dev)} dev, {len(test)} test")
+
+    return TaskDataset(
+        name="svamp",
+        train_samples=train_samples,
+        dev_samples=dev,
+        test_samples=test,
+        task_type="math",
+        metadata={"source": "ChilleD/SVAMP"},
+    )
+
+
+def _load_humaneval(num_samples: int, seed: int, dev_test_split: float = 0.0) -> TaskDataset:
+    """Load HumanEval (HF: openai/openai_humaneval) — code generation, pass@1.
+
+    The sample `input` is the function signature + docstring; the `target`
+    is a JSON blob carrying the unit tests and entry point, consumed by the
+    'code' score function which executes the completion against the tests.
+    """
+    try:
+        from datasets import load_dataset as hf_load_dataset
+    except ImportError:
+        raise DatasetError("'datasets' package required. Run: pip install datasets")
+
+    try:
+        dataset = hf_load_dataset("openai/openai_humaneval", split="test")
+    except Exception as e:
+        raise DatasetError(f"Failed to load openai/openai_humaneval: {e}") from e
+
+    all_samples = []
+    for item in dataset:
+        all_samples.append({
+            "input": item["prompt"],
+            "target": json.dumps({
+                "prompt": item["prompt"],
+                "test": item["test"],
+                "entry_point": item["entry_point"],
+            }),
+            "_canonical": item["canonical_solution"],
+        })
+
+    # Test split is carved with a FIXED seed so the held-out set is identical
+    # across run seeds; only train/dev vary with the run seed (see module note).
+    rng = random.Random(TEST_SPLIT_SEED)
+    rng.shuffle(all_samples)
+
+    n_train = 8 if len(all_samples) >= 8 + 20 else 3
+    if dev_test_split > 0.0:
+        pool = len(all_samples) - n_train
+        n_dev = max(1, round(pool * dev_test_split))
+        n_test = pool - n_dev
+        test = all_samples[:n_test]
+        _rest = all_samples[n_test:]
+    elif len(all_samples) >= 8 + 50 + 115:
+        n_test = min(115, max(1, len(all_samples) - n_train - 50))
+        test = all_samples[:n_test]
+        _rest = all_samples[n_test:]
+    else:
+        n_test = min(115, max(1, len(all_samples) - n_train - 33))
+        test = all_samples[:n_test]
+        _rest = all_samples[n_test:]
+
+    random.Random(seed).shuffle(_rest)   # run seed varies train/dev only
+    train = _rest[:n_train]
+    dev = _rest[n_train:]
+
+    # Train samples feed few-shot/Lamarckian operators — show the canonical
+    # solution as the target, not the JSON test blob used for scoring.
+    train = [
+        {"input": s["input"], "target": s["_canonical"]} for s in train
+    ]
+    test = [{"input": s["input"], "target": s["target"]} for s in test]
+    dev = [{"input": s["input"], "target": s["target"]} for s in dev]
+
+    return TaskDataset(
+        name="humaneval",
+        train_samples=train,
+        dev_samples=dev,
+        test_samples=test,
+        task_type="code",
+        metadata={"source": "openai/openai_humaneval"},
+    )
+
+
+def _decode_lcb_private_tests(raw: str) -> list:
+    """Decode LiveCodeBench's private_test_cases field.
+
+    Usually plain JSON; when the payload is large LiveCodeBench instead
+    ships it as base64(zlib(pickle(json_string))) -- the format used by the
+    official LiveCodeBench loading code. Falls back to an empty list on any
+    decode failure rather than raising, since public_test_cases alone still
+    gives a (weaker) usable signal.
+    """
+    import json as _json
+
+    try:
+        return _json.loads(raw)
+    except (ValueError, TypeError):
+        pass
+
+    import base64 as _b64
+    import pickle
+    import zlib
+
+    try:
+        return _json.loads(
+            pickle.loads(zlib.decompress(_b64.b64decode(raw.encode("utf-8"))))
+        )
+    except Exception:
+        logger.warning("livebench/coding: failed to decode private_test_cases, using public only")
+        return []
+
+
+def _load_livebench_coding(num_samples: int, seed: int, dev_test_split: float = 0.0) -> TaskDataset:
+    """Load LiveBench's coding category (HF: livebench/coding) —
+    LiveCodeBench-sourced problems, functional (LeetCode-style) or
+    stdin/stdout test cases. See _score_livecodebench (scoring.py) for how
+    a candidate completion is executed and judged.
+
+    Held to task_type="code" (same as HumanEval) so no other layer needs a
+    new task_type -- scoring.py's _score_code dispatches on target shape.
+
+    The dataset mixes two task formats (item['task']): 'LCB_generation'
+    (write the whole method from `starter_code`) and 'coding_completion'
+    (~50 of the corpus -- the prompt shows a much longer partial solution
+    already, embedded in item['partial_solution'], and instructs the model
+    to write ONLY the remaining lines to append directly after it). Using
+    `starter_code` for completion-format items is wrong: it's a bare
+    signature, not what the model was actually shown or told to continue
+    from, so its own variables (defined in the longer partial_solution) are
+    undefined when the scorer concatenates onto the wrong prefix -- measured
+    2026-08-30: both Qwen3-4B and GPT-4.1 landed at an identical 0.300 on
+    this dataset, and their "wrong" completions were near-identical
+    NameError-shaped fragments referencing variables from the real
+    partial_solution the scorer never saw. `task_format` and
+    `partial_solution` are threaded through so the scorer can pick the
+    right prefix per sample instead of assuming `starter_code` for all.
+    """
+    try:
+        from datasets import load_dataset as hf_load_dataset
+    except ImportError:
+        raise DatasetError("'datasets' package required. Run: pip install datasets")
+
+    try:
+        dataset = hf_load_dataset("livebench/coding", split="test")
+    except Exception as e:
+        raise DatasetError(f"Failed to load livebench/coding: {e}") from e
+
+    import ast as _ast
+    import json as _json
+
+    all_samples = []
+    for item in dataset:
+        turns = item.get("turns") or []
+        question = turns[0] if turns else item.get("question_title", "")
+        if not question:
+            continue
+
+        oj = item.get("original_json")
+        if isinstance(oj, str):
+            try:
+                oj = _ast.literal_eval(oj)
+            except (ValueError, SyntaxError):
+                oj = {}
+        oj = oj or {}
+        starter_code = oj.get("starter_code", "") or ""
+        metadata = oj.get("metadata")
+        if isinstance(metadata, str):
+            try:
+                metadata = _json.loads(metadata)
+            except ValueError:
+                metadata = {}
+        func_name = (metadata or {}).get("func_name", "")
+
+        try:
+            public = _json.loads(item.get("public_test_cases") or "[]")
+        except ValueError:
+            public = []
+        private = _decode_lcb_private_tests(item.get("private_test_cases") or "")
+        test_cases = list(public) + list(private)
+        if not test_cases:
+            continue
+
+        task_format = "completion" if item.get("task") == "coding_completion" else "generation"
+        partial_solution = item.get("partial_solution") or ""
+
+        target = _json.dumps({
+            "test_cases": test_cases,
+            "starter_code": starter_code,
+            "func_name": func_name,
+            "task_format": task_format,
+            "partial_solution": partial_solution,
+        })
+        # Train samples' target is embedded verbatim into few-shot exemplar
+        # prompts, so use a short canonical/placeholder here rather than the
+        # full test-case JSON blob (which can carry hundreds of cases and
+        # blow up prompt size).
+        canonical = oj.get("solution") or ""
+        if not canonical:
+            canonical = (starter_code.rstrip("\n") + "\n    pass") if starter_code else "pass"
+        all_samples.append({"input": question, "target": target, "_canonical": canonical})
+
+    if not all_samples:
+        raise DatasetError("livebench/coding returned no usable samples")
+
+    # Test split is carved with a FIXED seed so the held-out set is identical
+    # across run seeds; only train/dev vary with the run seed (see module note).
+    rng = random.Random(TEST_SPLIT_SEED)
+    rng.shuffle(all_samples)
+
+    # ~128 problems total. Support 50/50 split via dev_test_split parameter.
+    n_train = 8 if len(all_samples) >= 8 + 20 else 3
+    if dev_test_split > 0.0:
+        pool = len(all_samples) - n_train
+        n_dev = max(1, round(pool * dev_test_split))
+        n_test = pool - n_dev
+    elif len(all_samples) >= 8 + 50 + 115:
+        n_test = min(115, max(1, len(all_samples) - n_train - 50))
+        n_dev = len(all_samples) - n_test - n_train
+    else:
+        n_test = min(115, max(1, len(all_samples) - n_train - 33))
+        n_dev = len(all_samples) - n_test - n_train
+
+    test = all_samples[:n_test]
+    _rest = all_samples[n_test:]
+    random.Random(seed).shuffle(_rest)   # run seed varies train/dev only
+    train_raw = _rest[:n_train]
+    dev = _rest[n_train:]
+
+    # Train samples feed few-shot/Lamarckian operators -- show the short
+    # canonical/placeholder text as the target, not the JSON test blob used
+    # for scoring (see the '_canonical' comment above).
+    train = [
+        {"input": s["input"], "target": s["_canonical"]} for s in train_raw
+    ]
+    dev = [{"input": s["input"], "target": s["target"]} for s in dev]
+    test = [{"input": s["input"], "target": s["target"]} for s in test]
+
+    logger.info(
+        f"livebench/coding loaded: {len(train)} train, {len(dev)} dev, "
+        f"{len(test)} test"
+    )
+
+    return TaskDataset(
+        name="livebench_coding",
+        train_samples=train,
+        dev_samples=dev,
+        test_samples=test,
+        task_type="code",
+        metadata={"source": "livebench/coding"},
+    )
+
+
+def _load_mmlu_pro(task: str, num_samples: int, seed: int, dev_test_split: float = 0.0) -> TaskDataset:
+    """Load MMLU-Pro (HF: TIGER-Lab/MMLU-Pro) — hard 10-option MCQ.
+
+    12032 test rows across 14 categories. `task` filters to a single category
+    (e.g. 'math', 'biology'); leave empty for all categories combined.
+    Input is formatted as question + lettered option list (A–J).
+    Target is the answer letter (A–J); scored by _score_mcq.
+    """
+    try:
+        from datasets import load_dataset as hf_load_dataset
+    except ImportError:
+        raise DatasetError("'datasets' package required. Run: pip install datasets")
+
+    try:
+        dataset = hf_load_dataset("TIGER-Lab/MMLU-Pro", split="test")
+    except Exception as e:
+        raise DatasetError(f"Failed to load MMLU-Pro: {e}") from e
+
+    letters = "ABCDEFGHIJ"
+
+    all_samples = []
+    for item in dataset:
+        if task and item.get("category", "") != task:
+            continue
+        question = item.get("question", "")
+        options = item.get("options", [])
+        answer = item.get("answer", "")
+        if not (question and options and answer):
+            continue
+        option_lines = "\n".join(
+            f"{letters[i]}. {opt}" for i, opt in enumerate(options) if i < len(letters)
+        )
+        input_text = f"{question}\n\n{option_lines}"
+        all_samples.append({"input": input_text, "target": answer.upper()})
+
+    if not all_samples:
+        raise DatasetError(
+            f"MMLU-Pro returned no samples (category filter: {task!r})"
+        )
+
+    rng = random.Random(TEST_SPLIT_SEED)
+    rng.shuffle(all_samples)
+    all_samples = all_samples[:num_samples]
+
+    n_train = 8 if len(all_samples) >= 8 + 20 else 3
+    if dev_test_split > 0.0:
+        pool = len(all_samples) - n_train
+        n_dev = max(1, round(pool * dev_test_split))
+        n_test = pool - n_dev
+        test = all_samples[:n_test]
+        _rest = all_samples[n_test:]
+    elif len(all_samples) >= 8 + 50 + 115:
+        n_test = min(115, max(1, len(all_samples) - n_train - 50))
+        test = all_samples[:n_test]
+        _rest = all_samples[n_test:]
+    else:
+        n_test = min(115, max(1, len(all_samples) - n_train - 33))
+        test = all_samples[:n_test]
+        _rest = all_samples[n_test:]
+
+    random.Random(seed).shuffle(_rest)
+    train = _rest[:n_train]
+    dev = _rest[n_train:]
+
+    name = f"mmlu_pro_{task}" if task else "mmlu_pro"
+    return TaskDataset(
+        name=name,
+        train_samples=train,
+        dev_samples=dev,
+        test_samples=test,
+        task_type="mcq",
+        metadata={"source": "TIGER-Lab/MMLU-Pro", "category": task},
+    )
+
+
+def _load_json(path: str, num_samples: int, seed: int) -> TaskDataset:
+    """Load dataset from a JSON file.
+
+    Expected format:
+    [{"input": "...", "target": "..."}, ...] or
+    {"train": [...], "dev": [...], "test": [...]}
+    """
+    path = Path(path)
+    if not path.exists():
+        raise DatasetError(f"Dataset file not found: {path}")
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise DatasetError(f"Invalid JSON in {path}: {e}") from e
+
+    if isinstance(data, list):
+        # Flat list — split it. Test is carved off first with the fixed
+        # TEST_SPLIT_SEED (same mechanism as the built-in loaders) so it's
+        # identical across a seed sweep; only the remainder is shuffled with
+        # the run seed for train/dev.
+        data = list(data)
+        random.Random(TEST_SPLIT_SEED).shuffle(data)
+        data = data[:num_samples]
+
+        n_train = max(3, len(data) // 5)
+        n_remaining = len(data) - n_train
+        n_test = n_remaining // 2
+
+        test = data[:n_test]
+        _rest = data[n_test:]
+        random.Random(seed).shuffle(_rest)
+        train = _rest[:n_train]
+        dev = _rest[n_train:]
+    elif isinstance(data, dict):
+        train = data.get("train", [])[:num_samples // 5]
+        dev = data.get("dev", data.get("validation", []))[:num_samples // 2]
+        test = data.get("test", [])[:num_samples // 2]
+    else:
+        raise DatasetError(f"Unexpected JSON structure in {path}")
+
+    task_type = _detect_task_type(train) if train else "auto"
+
+    return TaskDataset(
+        name=path.stem,
+        train_samples=train,
+        dev_samples=dev,
+        test_samples=test,
+        task_type=task_type,
+        metadata={"source": "json", "path": str(path)},
+    )
+
+
+def _detect_task_type(samples: List[Dict[str, str]]) -> str:
+    """Auto-detect task type from sample targets."""
+    if not samples:
+        return "auto"
+
+    targets = [s["target"].strip().lower() for s in samples[:20]]
+
+    # Check boolean (includes valid/invalid, e.g. BBH formal_fallacies)
+    bool_values = {"true", "false", "yes", "no", "valid", "invalid"}
+    if all(t in bool_values for t in targets):
+        return "boolean"
+
+    # Check MCQ: single letter with optional parens — "A", "(A)", "a)"
+    import re
+    if all(re.fullmatch(r"\(?[a-z]\)?", t) for t in targets):
+        return "mcq"
+
+    # Check numeric
+    numeric_count = 0
+    for t in targets:
+        try:
+            float(t)
+            numeric_count += 1
+        except ValueError:
+            pass
+    if numeric_count > len(targets) * 0.8:
+        return "math"
+
+    return "auto"

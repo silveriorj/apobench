@@ -1,0 +1,41 @@
+# =============================================================================
+# APOBench sweep config: base settings shared across the whole matrix
+# =============================================================================
+# run.sh builds the actual (method x seed) matrix by looping `pof run` with
+# an overridden `seed` -- this YAML only supplies the shared LLM/evaluation/
+# budget defaults every cell in the matrix inherits.
+# =============================================================================
+
+llm:
+  backend: huggingface
+  model_name: Qwen/Qwen3-4B-Instruct-2507
+  device: auto
+  dtype: auto
+  max_new_tokens: 512
+  thinking_mode: false
+
+evaluation:
+  sample_size: 50
+  full_eval_size: 115
+  temperature: 0.0
+  max_new_tokens: 32
+  racing_enabled: true
+  racing_confidence: 0.05
+  racing_min_samples: 10
+
+optimizer:
+  population_size: 5
+  seed_prompt: ""       # fetched dynamically per task by pof.prompts.loader
+
+output_dir: outputs/02_multi_seed_sweep
+seed: 42
+verbose: true
+
+budget:
+  time_seconds: 3600
+  max_calls: 5000
+  max_total_tokens: 5000000
+  max_generations: 10
+  early_stop_patience: 3
+
+seeds: [42, 123, 7]

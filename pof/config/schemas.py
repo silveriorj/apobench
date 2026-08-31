@@ -1,0 +1,122 @@
+"""Pydantic v2 configuration schemas."""
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field
+
+
+class LLMConfig(BaseModel):
+    """LLM backend configuration."""
+
+    backend: str = Field(default="huggingface", description="Backend: 'huggingface', 'openai', or 'ollama'")
+    model_name: str = Field(default="Qwen/Qwen2.5-3B-Instruct", description="Model identifier")
+    device: str = Field(default="auto", description="Device: 'auto', 'cuda', 'cpu'")
+    dtype: str = Field(default="auto", description="Dtype: 'auto', 'float16', 'bfloat16'")
+    # Operator-generation headroom (NOT eval; see EvalConfig.max_new_tokens).
+    # This is a cap, not a target: generation stops at EOS, so unused headroom
+    # costs nothing. Raised 512 -> 1512 so no operator can be silently cut off
+    # mid-prompt. HuggingFaceLLM counts and warns on generations that actually
+    # consume the full budget, so "was it ever binding?" is now measured
+    # rather than assumed.
+    max_new_tokens: int = Field(default=1512, description="Default max new tokens for generation")
+    temperature: float = Field(default=0.7, description="Default temperature")
+    top_p: float = Field(default=0.95, description="Default top-p")
+    batch_size: int = Field(default=8, description="Batch size for parallel evaluation")
+    thinking_mode: bool = Field(default=False, description="Enable thinking mode (/think tags)")
+    # OpenAI-specific
+    api_key: Optional[str] = Field(default=None, description="OpenAI API key (or env var)")
+    base_url: Optional[str] = Field(default=None, description="Custom API base URL")
+    max_workers: Optional[int] = Field(
+        default=None,
+        description="Concurrent request cap for OpenAILLM.generate_batch. "
+        "None keeps OpenAILLM's own default (16) -- override low (2-4) for "
+        "rate-limited free-tier API keys, where firing many requests at "
+        "once triggers a synchronized 429 storm instead of smooth retries.",
+    )
+
+
+class EvalConfig(BaseModel):
+    """Evaluation configuration."""
+    
+    sample_size: int = Field(default=50, description="Number of samples for evaluation")
+    full_eval_size: int = Field(default=100, description="Full evaluation sample size")
+    max_new_tokens: int = Field(default=64, description="Max tokens for eval responses (model is instructed to skip CoT)")
+    temperature: float = Field(default=0.0, description="Temperature for eval (0 = greedy)")
+    batch_size: int = Field(default=8, description="Batch size for evaluation (GPU batching)")
+    racing_enabled: bool = Field(default=True, description="Enable Hoeffding racing")
+    racing_confidence: float = Field(default=0.05, description="Racing confidence level (alpha)")
+    racing_min_samples: int = Field(default=10, description="Minimum samples before racing")
+    system_prompt_override: Optional[str] = Field(
+        default=None,
+        description="If set (including empty string), used verbatim as the eval "
+        "system prompt instead of the task_type-based default. Empty string strips "
+        "the format-enforcing scaffolding entirely -- e.g. to isolate how much of "
+        "a CoT run's score comes from that scaffolding vs. the seed prompt itself.",
+    )
+
+
+class BudgetConfig(BaseModel):
+    """Run-level budget constraints (hard caps)."""
+
+    time_seconds: Optional[int] = Field(default=None, description="Wall-clock time budget in seconds (None = no cap)")
+    max_calls: Optional[int] = Field(default=None, description="Maximum total LLM calls")
+    max_total_tokens: Optional[int] = Field(default=None, description="Maximum total tokens (input+output)")
+    max_input_tokens: Optional[int] = Field(default=None, description="Maximum total input tokens")
+    max_output_tokens: Optional[int] = Field(default=None, description="Maximum total output tokens")
+    max_generations: Optional[int] = Field(default=None, description="Maximum optimization generations")
+    early_stop_patience: int = Field(default=0, description="Stop if no improvement for this many consecutive generations")
+    finalize_reserve_fraction: float = Field(
+        default=0.08,
+        description=(
+            "Fraction of time_seconds reserved exclusively for _finalize() "
+            "(e.g. holdout re-ranking). The main search loop stops early "
+            "once remaining time drops to this reserve, so finalize is not "
+            "starved by BudgetExceeded. No effect if time_seconds is None."
+        ),
+    )
+    finalize_reserve_min_seconds: float = Field(
+        default=180.0,
+        description="Floor on the finalize time reserve, in seconds, regardless of finalize_reserve_fraction.",
+    )
+
+
+class OptimizerConfig(BaseModel):
+    """Optimizer-specific configuration."""
+
+    method: str = Field(default="see", description="Optimization method name")
+    population_size: int = Field(default=5, description="Population size (K)")
+    num_iterations: int = Field(default=3, description="Number of optimization iterations/phases")
+    seed_prompt: str = Field(default="", description="Initial seed prompt")
+    # Method-specific params stored as dict
+    params: Dict[str, Any] = Field(default_factory=dict, description="Method-specific parameters")
+
+
+class DatasetConfig(BaseModel):
+    """Dataset configuration."""
+
+    name: str = Field(default="bbh", description="Dataset name")
+    task: str = Field(default="", description="Specific task within dataset")
+    split: str = Field(default="train", description="Dataset split")
+    num_samples: int = Field(default=100, description="Number of samples to load")
+    num_few_shot: int = Field(default=3, description="Number of few-shot examples")
+    task_type: str = Field(default="", description="Override task_type; empty = auto-detect from data")
+    dev_test_split: float = Field(
+        default=0.0,
+        description="Fraction of the post-train pool given to dev (rest to test), e.g. 0.5 "
+        "for an even 50/50 split. 0.0 (default) preserves the original fixed-size split "
+        "(test capped at 115, dev gets the remainder).",
+    )
+
+
+class RunConfig(BaseModel):
+    """Top-level run configuration combining all sub-configs."""
+    
+    llm: LLMConfig = Field(default_factory=LLMConfig)
+    evaluation: EvalConfig = Field(default_factory=EvalConfig)
+    optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
+    dataset: DatasetConfig = Field(default_factory=DatasetConfig)
+    budget: BudgetConfig = Field(default_factory=BudgetConfig)
+    output_dir: str = Field(default="outputs", description="Output directory for results")
+    seed: int = Field(default=42, description="Random seed")
+    verbose: bool = Field(default=True, description="Verbose logging")

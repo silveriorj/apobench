@@ -1,0 +1,459 @@
+"""HuggingFace backend — efficient local inference with batching.
+
+Ported from Projeto's HFWrapper with enhancements:
+- Batch generation for evaluation efficiency
+- Thinking mode support (/think and /no_think tags)
+- Chat template formatting
+- Automatic device/dtype selection
+- Usage statistics tracking
+"""
+from __future__ import annotations
+
+import gc
+import logging
+import re
+import time
+from typing import Any, Dict, List, Optional
+
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from pof.core.exceptions import LLMError
+from pof.core.types import GenerationConfig
+from pof.llm.base import BaseLLM
+
+logger = logging.getLogger(__name__)
+
+
+class HuggingFaceLLM(BaseLLM):
+    """Local HuggingFace model backend with efficient batching.
+
+    Features:
+    - Automatic device placement (CUDA/CPU)
+    - Chat template formatting via tokenizer
+    - Batch generation for parallel evaluation
+    - Thinking mode support (strips thinking tags from output)
+    - Memory-efficient with explicit cleanup
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        device: str = "auto",
+        dtype: str = "auto",
+        thinking_mode: bool = False,
+        default_max_new_tokens: int = 512,
+        **kwargs: Any,
+    ):
+        super().__init__(model_name, default_max_new_tokens=default_max_new_tokens, **kwargs)
+        self.thinking_mode = thinking_mode
+        self._device = self._resolve_device(device)
+        self._dtype = self._resolve_dtype(dtype)
+        self._model = None
+        self._tokenizer = None
+        self._load_model()
+
+    def _resolve_device(self, device: str) -> str:
+        if device == "auto":
+            if torch.cuda.is_available():
+                return "cuda"
+            # Apple Silicon GPU (M-series). Checked before falling to CPU --
+            # without this, "auto" silently ran the whole benchmark on CPU on
+            # any Mac, which for a ~1000-call optimizer run turns a few hours
+            # into multiple days rather than erroring out visibly.
+            if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+                return "mps"
+            return "cpu"
+        return device
+
+    def _resolve_dtype(self, dtype: str) -> torch.dtype:
+        if dtype == "auto":
+            if torch.cuda.is_available():
+                if torch.cuda.is_bf16_supported():
+                    return torch.bfloat16
+                return torch.float16
+            if self._device == "mps":
+                # MPS has supported bf16 matmuls since PyTorch 2.x; float16 on
+                # MPS has a history of NaNs in attention softmax on some
+                # kernels, so bf16 is the safer default rather than mirroring
+                # the CUDA float16 fallback here.
+                return torch.bfloat16
+            return torch.float32
+        dtype_map = {
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "float32": torch.float32,
+        }
+        return dtype_map.get(dtype, torch.float32)
+
+    def _load_model(self) -> None:
+        """Load model and tokenizer."""
+        try:
+            logger.info(f"Loading model: {self.model_name} on {self._device} ({self._dtype})")
+            self._tokenizer = AutoTokenizer.from_pretrained(
+                self.model_name,
+                trust_remote_code=True,
+                padding_side="left",
+            )
+            if self._tokenizer.pad_token is None:
+                self._tokenizer.pad_token = self._tokenizer.eos_token
+
+            self._model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                torch_dtype=self._dtype,  # `dtype=` only exists from transformers>=4.56;
+                                           # we're pinned to <4.54 for Phi-4-mini compatibility
+                device_map=self._device if self._device == "auto" else None,
+                trust_remote_code=True,
+            )
+            if self._device != "auto":
+                self._model = self._model.to(self._device)
+            self._model.eval()
+
+            # Some architectures (e.g. Gemma3) default generation_config.cache_implementation
+            # to "hybrid", which routes generate() through a torch.compile'd forward pass with
+            # one_graph=True. Every call here has a differently-shaped prompt, so it recompiles
+            # on nearly every generation and eventually hits FailOnRecompileLimitHit. Force the
+            # plain dynamic cache so generation stays eager.
+            if getattr(self._model.generation_config, "cache_implementation", None) is not None:
+                self._model.generation_config.cache_implementation = None
+
+            logger.info(f"Model loaded successfully: {self.model_name}")
+        except Exception as e:
+            raise LLMError(f"Failed to load model {self.model_name}: {e}") from e
+
+    def generate(
+        self,
+        prompt: str,
+        config: Optional[GenerationConfig] = None,
+        system_prompt: Optional[str] = None,
+    ) -> str:
+        """Generate a single response using chat template."""
+        config = config or GenerationConfig()
+        messages = self._build_messages(prompt, system_prompt)
+        input_text = self._apply_chat_template(messages)
+
+        # Budget-aware max_new_tokens
+        budget = self.get_budget()
+        if budget is not None:
+            input_tokens_sum = len(self._tokenizer.encode(input_text))
+            eff_max = budget.plan_generation(input_tokens_sum, 1, config.max_new_tokens)
+            config = GenerationConfig(
+                max_new_tokens=eff_max,
+                temperature=config.temperature,
+                top_p=config.top_p,
+                top_k=config.top_k,
+                do_sample=config.do_sample,
+                num_return_sequences=config.num_return_sequences,
+                stop_sequences=list(config.stop_sequences),
+                repetition_penalty=config.repetition_penalty,
+            )
+
+        start = time.time()
+        output = self._generate_text(input_text, config)
+        elapsed = time.time() - start
+
+        input_tokens = len(self._tokenizer.encode(input_text))
+        output_tokens = len(self._tokenizer.encode(output))
+        tok_per_sec = output_tokens / elapsed if elapsed > 0 else 0
+        logger.debug(f"[LLM] {elapsed:.1f}s | {output_tokens}tok out | {tok_per_sec:.0f} tok/s")
+        self._track_call(input_tokens, output_tokens, elapsed)
+
+        return self._clean_output(output)
+
+    def generate_batch(
+        self,
+        prompts: List[str],
+        config: Optional[GenerationConfig] = None,
+        system_prompt: Optional[str] = None,
+    ) -> List[str]:
+        """Generate responses for multiple prompts with batched inference."""
+        if not prompts:
+            return []
+
+        config = config or GenerationConfig()
+        messages_list = [self._build_messages(p, system_prompt) for p in prompts]
+        input_texts = [self._apply_chat_template(m) for m in messages_list]
+
+        # Budget-aware max_new_tokens for batched generation
+        budget = self.get_budget()
+        if budget is not None:
+            total_input = sum(len(self._tokenizer.encode(t)) for t in input_texts)
+            prompts_in_call = len(input_texts)
+            eff_max = budget.plan_generation(total_input, prompts_in_call, config.max_new_tokens)
+            config = GenerationConfig(
+                max_new_tokens=eff_max,
+                temperature=config.temperature,
+                top_p=config.top_p,
+                top_k=config.top_k,
+                do_sample=config.do_sample,
+                num_return_sequences=config.num_return_sequences,
+                stop_sequences=list(config.stop_sequences),
+                repetition_penalty=config.repetition_penalty,
+            )
+
+        start = time.time()
+        outputs = self._generate_batch_adaptive(input_texts, config)
+        elapsed = time.time() - start
+
+        total_input = sum(len(self._tokenizer.encode(t)) for t in input_texts)
+        total_output = sum(len(self._tokenizer.encode(o)) for o in outputs)
+        tok_per_sec = total_output / elapsed if elapsed > 0 else 0
+        logger.debug(
+            f"[LLM] {elapsed:.1f}s | batch={len(input_texts)}"
+            f" ≈{total_output // max(len(outputs), 1)}tok/prompt out | {tok_per_sec:.0f} tok/s"
+        )
+        self._track_call(total_input, total_output, elapsed)
+
+        return [self._clean_output(o) for o in outputs]
+
+    def _generate_batch_adaptive(
+        self, input_texts: List[str], config: GenerationConfig,
+    ) -> List[str]:
+        cap = getattr(self, "_max_safe_batch_size", None)
+        if cap is not None and len(input_texts) > cap:
+            outputs: List[str] = []
+            for i in range(0, len(input_texts), cap):
+                outputs.extend(self._generate_batch_adaptive(input_texts[i:i + cap], config))
+            return outputs
+
+        try:
+            return self._generate_batch_texts(input_texts, config)
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            gc.collect()
+            if len(input_texts) <= 1:
+                raise
+            new_cap = max(1, len(input_texts) // 2)
+            self._max_safe_batch_size = min(
+                new_cap, getattr(self, "_max_safe_batch_size", None) or new_cap
+            )
+            logger.warning(
+                f"[LLM] CUDA OOM at batch={len(input_texts)}, capping batch "
+                f"size to {self._max_safe_batch_size} for the rest of this run"
+            )
+            outputs = []
+            for i in range(0, len(input_texts), self._max_safe_batch_size):
+                outputs.extend(
+                    self._generate_batch_adaptive(
+                        input_texts[i:i + self._max_safe_batch_size], config
+                    )
+                )
+            return outputs
+
+    def _build_messages(
+        self, prompt: str, system_prompt: Optional[str] = None
+    ) -> List[Dict[str, str]]:
+        """Build chat messages list."""
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+
+        # Add thinking mode tags if enabled
+        if self.thinking_mode:
+            prompt = f"/think\n{prompt}"
+
+        messages.append({"role": "user", "content": prompt})
+        return messages
+
+    def _apply_chat_template(self, messages: List[Dict[str, str]]) -> str:
+        """Apply tokenizer's chat template.
+
+        Passes enable_thinking so Qwen3 respects thinking_mode=False; retries
+        without the kwarg for other models. Models whose templates reject the
+        system role (e.g. Gemma-2 raises "System role not supported") get the
+        system prompt folded into the first user message instead.
+        """
+        last_error: Optional[Exception] = None
+        for msgs in (messages, self._fold_system_into_user(messages)):
+            try:
+                return self._tokenizer.apply_chat_template(
+                    msgs,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=self.thinking_mode,
+                )
+            except TypeError:
+                # Tokenizer doesn't support enable_thinking (non-Qwen3 model)
+                try:
+                    return self._tokenizer.apply_chat_template(
+                        msgs,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
+                except Exception as e:
+                    last_error = e
+                    continue
+            except Exception as e:
+                last_error = e
+                continue
+        # Plain-text fallback (no usable chat template at all). Logged so a
+        # degraded run is visible instead of looking like a bad prompt.
+        logger.warning(
+            f"Chat template application failed for both message variants "
+            f"(last error: {last_error!r}); falling back to plain-text "
+            f"<|role|> format. Model was likely not trained on this format."
+        )
+        parts = []
+        for msg in messages:
+            parts.append(f"<|{msg['role']}|>\n{msg['content']}")
+        parts.append("<|assistant|>\n")
+        return "\n".join(parts)
+
+    @staticmethod
+    def _fold_system_into_user(
+        messages: List[Dict[str, str]]
+    ) -> List[Dict[str, str]]:
+        """Merge a system message into the first user message.
+
+        For chat templates that reject the system role (e.g. Gemma-2).
+        """
+        system = [m for m in messages if m["role"] == "system"]
+        if not system:
+            return messages
+        rest = [dict(m) for m in messages if m["role"] != "system"]
+        instructions = "\n".join(m["content"] for m in system)
+        for m in rest:
+            if m["role"] == "user":
+                m["content"] = f"{instructions}\n\n{m['content']}"
+                break
+        return rest
+
+    @torch.inference_mode()
+    def _generate_text(self, input_text: str, config: GenerationConfig) -> str:
+        """Generate text from a single input."""
+        inputs = self._tokenizer(
+            input_text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=4096,
+        ).to(self._model.device)
+
+        input_length = inputs["input_ids"].shape[1]
+
+        gen_kwargs = {
+            "max_new_tokens": config.max_new_tokens,
+            "temperature": max(config.temperature, 0.01),
+            "top_p": config.top_p,
+            "top_k": config.top_k,
+            "do_sample": config.do_sample,
+            "pad_token_id": self._tokenizer.pad_token_id,
+            "repetition_penalty": config.repetition_penalty,
+        }
+        # Optional grammar-constrained decoding (see pof/llm/structured.py).
+        # A caller sets this for the duration of one call and clears it after;
+        # the processor carries parser position state, so it must be rebuilt
+        # per generation rather than reused.
+        if getattr(self, "_logits_processors", None):
+            gen_kwargs["logits_processor"] = self._logits_processors
+
+        # Greedy if temperature is very low. Pin the sampling keys to the
+        # values transformers treats as "unset" for greedy decoding, rather
+        # than popping them — popping would leave the checkpoint's own
+        # sampling defaults active and trigger validate() warnings.
+        if config.temperature < 0.01:
+            gen_kwargs["do_sample"] = False
+            gen_kwargs["temperature"] = 1.0
+            gen_kwargs["top_p"] = 1.0
+            gen_kwargs["top_k"] = 50
+
+        outputs = self._model.generate(**inputs, **gen_kwargs)
+        generated = outputs[0][input_length:]
+        self._note_if_truncated(len(generated), gen_kwargs["max_new_tokens"])
+        return self._tokenizer.decode(generated, skip_special_tokens=True)
+
+    def _note_if_truncated(self, n_generated: int, cap: int) -> None:
+        """Warn when a generation used its entire budget.
+
+        Hitting the cap exactly means the model was cut off rather than
+        stopping at EOS, so the returned prompt is a fragment. That is
+        invisible otherwise -- the text still looks like a prompt and still
+        gets evaluated -- and it silently degrades whichever operator
+        produced it. Counted so a run can report how often it happened.
+        """
+        if cap and n_generated >= cap:
+            self._truncated_generations = getattr(self, "_truncated_generations", 0) + 1
+            if self._truncated_generations in (1, 10, 50, 100) or \
+                    self._truncated_generations % 250 == 0:
+                logger.warning(
+                    f"[{self.model_name}] generation hit max_new_tokens={cap} "
+                    f"and was cut off (occurrence #{self._truncated_generations}); "
+                    f"raise llm.max_new_tokens if operators need more room"
+                )
+
+    @torch.inference_mode()
+    def _generate_batch_texts(
+        self, input_texts: List[str], config: GenerationConfig
+    ) -> List[str]:
+        """Batch generation for efficiency."""
+        inputs = self._tokenizer(
+            input_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=4096,
+        ).to(self._model.device)
+
+        input_lengths = [
+            (inputs["attention_mask"][i] == 1).sum().item()
+            for i in range(len(input_texts))
+        ]
+
+        gen_kwargs = {
+            "max_new_tokens": config.max_new_tokens,
+            "temperature": max(config.temperature, 0.01),
+            "top_p": config.top_p,
+            "top_k": config.top_k,
+            "do_sample": config.do_sample,
+            "pad_token_id": self._tokenizer.pad_token_id,
+            "repetition_penalty": config.repetition_penalty,
+        }
+        # Optional grammar-constrained decoding (see pof/llm/structured.py).
+        # A caller sets this for the duration of one call and clears it after;
+        # the processor carries parser position state, so it must be rebuilt
+        # per generation rather than reused.
+        if getattr(self, "_logits_processors", None):
+            gen_kwargs["logits_processor"] = self._logits_processors
+
+        # Same greedy handling as `_generate_text` — see the comment there.
+        # This is the hot path: batched evaluation is the bulk of all calls.
+        if config.temperature < 0.01:
+            gen_kwargs["do_sample"] = False
+            gen_kwargs["temperature"] = 1.0
+            gen_kwargs["top_p"] = 1.0
+            gen_kwargs["top_k"] = 50
+
+        outputs = self._model.generate(**inputs, **gen_kwargs)
+
+        results = []
+        pad_id = self._tokenizer.pad_token_id
+        for i, output in enumerate(outputs):
+            # Skip input tokens (account for left-padding)
+            generated = output[inputs["input_ids"].shape[1]:]
+            # Count real tokens only: short sequences in a batch are padded
+            # out to the longest one, so raw length would flag every batch as
+            # truncated.
+            real = int((generated != pad_id).sum()) if pad_id is not None else len(generated)
+            self._note_if_truncated(real, gen_kwargs["max_new_tokens"])
+            text = self._tokenizer.decode(generated, skip_special_tokens=True)
+            results.append(text)
+
+        return results
+
+    def _clean_output(self, text: str) -> str:
+        """Strip <think>…</think> blocks unconditionally — they are never useful output."""
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+        return text.strip()
+
+    def cleanup(self) -> None:
+        """Release GPU memory."""
+        if self._model is not None:
+            del self._model
+            self._model = None
+        if self._tokenizer is not None:
+            del self._tokenizer
+            self._tokenizer = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+        gc.collect()
