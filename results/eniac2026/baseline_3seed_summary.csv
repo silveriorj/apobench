@@ -1,0 +1,10 @@
+_dataset,_task_type,_seed,_optimizer,optimizer,dataset,task_type,model,primary_metric,elapsed_seconds,num_generations,prompt_tokens,completion_tokens,total_tokens,estimated_cost_usd
+gsm8k,math,seed42,baseline,baseline,gsm8k,math,Qwen/Qwen3-4B-Instruct-2507,0.46,749.8077616691589,0,30542,51052,81594,0.13264600000000001
+gsm8k,math,seed123,baseline,baseline,gsm8k,math,Qwen/Qwen3-4B-Instruct-2507,0.46,739.4333965778351,0,30542,51052,81594,0.13264600000000001
+gsm8k,math,seed456,baseline,baseline,gsm8k,math,Qwen/Qwen3-4B-Instruct-2507,0.46,741.8966159820557,0,30542,51052,81594,0.13264600000000001
+humaneval,coding,seed42,baseline,baseline,humaneval,coding,Qwen/Qwen3-4B-Instruct-2507,0.6666666666666666,419.34783911705017,0,19929,14663,34592,0.049255
+humaneval,coding,seed123,baseline,baseline,humaneval,coding,Qwen/Qwen3-4B-Instruct-2507,0.6666666666666666,418.3555657863617,0,19929,14663,34592,0.049255
+humaneval,coding,seed456,baseline,baseline,humaneval,coding,Qwen/Qwen3-4B-Instruct-2507,0.6666666666666666,418.7978005409241,0,19929,14663,34592,0.049255
+bbh,reasoning,seed42,baseline,baseline,bbh,reasoning,Qwen/Qwen3-4B-Instruct-2507,0.23,69.36278223991394,0,56890,1160,58050,0.059210000000000006
+bbh,reasoning,seed123,baseline,baseline,bbh,reasoning,Qwen/Qwen3-4B-Instruct-2507,0.3,67.41905045509338,0,57008,1130,58138,0.059268
+bbh,reasoning,seed456,baseline,baseline,bbh,reasoning,Qwen/Qwen3-4B-Instruct-2507,0.3,69.10029935836792,0,59715,1222,60937,0.062159000000000006
